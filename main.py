@@ -4,7 +4,7 @@ import random
 from collections import Counter
 from telegram.ext import Updater, CommandHandler
 
-BOT_VERSION = "Kurator v1.4.1 / Musical Discovery"
+BOT_VERSION = "Kurator v1.4.3 / Musical Discovery"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -24,7 +24,6 @@ def lastfm(method, **params):
 
 def get_recent_artists():
     data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=600)
-
     tracks = data.get("recenttracks", {}).get("track", [])
 
     artists = set()
@@ -60,7 +59,7 @@ def start(update, context):
         "Commands:\n"
         "/playlist — discovery playlist from history\n"
         "/playlist <genre> — discovery from genre\n"
-        "/genres <keyword> — search usable Last.fm tags\n"
+        "/genre <keyword> — search usable Last.fm tags\n"
         "/now — current track\n"
         "/recent — last tracks\n"
     )
@@ -102,19 +101,29 @@ def recent(update, context):
     update.message.reply_text("\n".join(lines))
 
 
-def genres(update, context):
+# --- FUNCIÓN CORREGIDA ---
+def genre(update, context):
 
     if not context.args:
-        update.message.reply_text("Usage: /genres <keyword>")
+        update.message.reply_text("Usage: /genre <keyword>")
         return
 
     keyword = " ".join(context.args)
 
-    data = lastfm("tag.search", tag=keyword, limit=20)
+    url = "http://ws.audioscrobbler.com/2.0/"
+
+    params = {
+        "method": "tag.search",
+        "tag": keyword,
+        "api_key": LASTFM_API,
+        "format": "json",
+        "limit": 20
+    }
+
+    data = requests.get(url, params=params).json()
 
     tags = data.get("results", {}).get("tagmatches", {}).get("tag", [])
 
-    # FIX: Last.fm sometimes returns dict instead of list
     if isinstance(tags, dict):
         tags = [tags]
 
@@ -165,7 +174,6 @@ def build_tracks_from_artists(artist_pool, excluded_artists):
                 playlist_tracks.append(f"{artist} - {t['name']}")
 
                 playlist_history["artists"].add(artist.lower())
-
                 playlist_history["tracks"].add(track_key)
 
                 break
@@ -176,8 +184,8 @@ def build_tracks_from_artists(artist_pool, excluded_artists):
 def playlist(update, context):
 
     if context.args:
-        genre = " ".join(context.args)
-        playlist_by_genre(update, genre)
+        genre_name = " ".join(context.args)
+        playlist_by_genre(update, genre_name)
     else:
         playlist_by_history(update)
 
@@ -191,7 +199,6 @@ def playlist_by_history(update):
     raw_tracks = data.get("recenttracks", {}).get("track", [])
 
     recent_artists = get_recent_artists()
-
     familiar = get_familiar_artists(min_plays=10)
 
     excluded_artists = recent_artists | familiar | playlist_history["artists"]
@@ -247,11 +254,11 @@ def playlist_by_history(update):
     update.message.reply_text(soundiiz_text)
 
 
-def playlist_by_genre(update, genre):
+def playlist_by_genre(update, genre_name):
 
-    update.message.reply_text(f"Generating {genre} discovery playlist...")
+    update.message.reply_text(f"Generating {genre_name} discovery playlist...")
 
-    tag_data = lastfm("tag.gettopartists", tag=genre, limit=50)
+    tag_data = lastfm("tag.gettopartists", tag=genre_name, limit=50)
 
     artists_raw = tag_data.get("topartists", {}).get("artist", [])
 
@@ -260,7 +267,6 @@ def playlist_by_genre(update, genre):
         return
 
     recent_artists = get_recent_artists()
-
     familiar = get_familiar_artists(min_plays=10)
 
     excluded = recent_artists | familiar | playlist_history["artists"]
@@ -276,7 +282,7 @@ def playlist_by_genre(update, genre):
     soundiiz_text = "\n".join(playlist_tracks[:30])
 
     update.message.reply_text(
-        f"{BOT_VERSION}\n\n{genre} discovery playlist ({len(playlist_tracks[:30])} tracks)\n"
+        f"{BOT_VERSION}\n\n{genre_name} discovery playlist ({len(playlist_tracks[:30])} tracks)\n"
     )
 
     update.message.reply_text(soundiiz_text)
@@ -287,7 +293,7 @@ dp = updater.dispatcher
 
 dp.add_handler(CommandHandler("start", start))
 dp.add_handler(CommandHandler("playlist", playlist, pass_args=True))
-dp.add_handler(CommandHandler("genres", genres, pass_args=True))
+dp.add_handler(CommandHandler("genre", genre, pass_args=True))
 dp.add_handler(CommandHandler("now", now))
 dp.add_handler(CommandHandler("recent", recent))
 
