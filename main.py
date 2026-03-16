@@ -4,7 +4,7 @@ import random
 from collections import Counter
 from telegram.ext import Updater, CommandHandler
 
-BOT_VERSION = "Kurator v1.4.4 / Musical Discovery"
+BOT_VERSION = "Kurator v1.4.5 / Musical Discovery"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -59,7 +59,7 @@ def start(update, context):
         "Commands:\n"
         "/playlist — discovery playlist from history\n"
         "/playlist <genre> — discovery from genre\n"
-        "/genre <keyword> — search usable Last.fm tags\n"
+        "/genre <keyword> — explore related genres\n"
         "/now — current track\n"
         "/recent — last tracks\n"
     )
@@ -70,6 +70,7 @@ def start(update, context):
 def now(update, context):
 
     data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=1)
+
     tracks = data.get("recenttracks", {}).get("track", [])
 
     if not tracks:
@@ -87,6 +88,7 @@ def now(update, context):
 def recent(update, context):
 
     data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=5)
+
     tracks = data.get("recenttracks", {}).get("track", [])
 
     lines = []
@@ -99,7 +101,7 @@ def recent(update, context):
     update.message.reply_text("\n".join(lines))
 
 
-# --- FUNCIÓN /genre CORREGIDA ---
+# --- NUEVO /genre ---
 def genre(update, context):
 
     if not context.args:
@@ -108,28 +110,41 @@ def genre(update, context):
 
     keyword = " ".join(context.args).lower()
 
-    data = lastfm("tag.getTopTags")
-    tags = data.get("toptags", {}).get("tag", [])
+    # 1. artistas representativos del género
+    data = lastfm("tag.gettopartists", tag=keyword, limit=15)
 
-    if not tags:
-        update.message.reply_text("No tags found.")
+    artists = data.get("topartists", {}).get("artist", [])
+
+    if not artists:
+        update.message.reply_text("No artists found for that genre.")
         return
 
-    matches = []
+    tag_counter = Counter()
 
-    for tag in tags:
-        name = tag["name"]
-        if keyword in name.lower():
-            matches.append(name)
+    # 2. extraer tags de esos artistas
+    for artist in artists[:10]:
 
-    if not matches:
-        update.message.reply_text("No tags found.")
+        name = artist["name"]
+
+        tag_data = lastfm("artist.gettoptags", artist=name)
+
+        tags = tag_data.get("toptags", {}).get("tag", [])
+
+        for tag in tags:
+
+            tag_name = tag["name"].lower()
+
+            if tag_name != keyword:
+                tag_counter[tag_name] += 1
+
+    if not tag_counter:
+        update.message.reply_text("No related genres found.")
         return
 
-    tag_list = matches[:20]
+    results = [tag for tag, _ in tag_counter.most_common(20)]
 
-    message = f"{BOT_VERSION}\n\nTags related to '{keyword}':\n\n"
-    message += "\n".join(tag_list)
+    message = f"{BOT_VERSION}\n\nGenres related to '{keyword}':\n\n"
+    message += "\n".join(results)
 
     update.message.reply_text(message)
 
@@ -147,12 +162,14 @@ def build_tracks_from_artists(artist_pool, excluded_artists):
             continue
 
         top_data = lastfm("artist.gettoptracks", artist=artist, limit=10)
+
         tracks = top_data.get("toptracks", {}).get("track", [])
 
         if not tracks:
             continue
 
         candidates = tracks[3:] if len(tracks) > 3 else tracks
+
         random.shuffle(candidates)
 
         for t in candidates:
@@ -185,6 +202,7 @@ def playlist_by_history(update):
     update.message.reply_text("Generating discovery playlist...")
 
     data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=600)
+
     raw_tracks = data.get("recenttracks", {}).get("track", [])
 
     recent_artists = get_recent_artists()
@@ -207,6 +225,7 @@ def playlist_by_history(update):
             break
 
         sim_data = lastfm("artist.getsimilar", artist=artist, limit=50)
+
         candidates = sim_data.get("similarartists", {}).get("artist", [])
 
         random.shuffle(candidates)
@@ -229,6 +248,7 @@ def playlist_by_history(update):
     playlist_tracks = build_tracks_from_artists(similar_artists, excluded_artists)
 
     if not playlist_tracks:
+
         update.message.reply_text("No new tracks found.")
         return
 
@@ -246,6 +266,7 @@ def playlist_by_genre(update, genre_name):
     update.message.reply_text(f"Generating {genre_name} discovery playlist...")
 
     tag_data = lastfm("tag.gettopartists", tag=genre_name, limit=50)
+
     artists_raw = tag_data.get("topartists", {}).get("artist", [])
 
     if not artists_raw:
