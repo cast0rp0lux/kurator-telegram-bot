@@ -4,7 +4,7 @@ import random
 from collections import Counter
 from telegram.ext import Updater, CommandHandler
 
-BOT_VERSION = "Kurator v1.1 / Musical Discovery"
+BOT_VERSION = "Kurator v1.2 / Musical Discovery"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -43,10 +43,10 @@ def start(update, context):
     message = (
         f"{BOT_VERSION}\n\n"
         "Commands:\n"
-        "/playlist — generate discovery playlist\n"
-        "/playlist <genre> — genre-based playlist\n"
+        "/playlist — discovery playlist from history\n"
+        "/playlist <genre> — discovery from genre\n"
         "/now — current track\n"
-        "/recent — last tracks\n"
+        "/recent — recent tracks\n"
     )
 
     update.message.reply_text(message)
@@ -128,7 +128,11 @@ def build_tracks_from_artists(artist_pool, excluded_artists):
 
 def playlist(update, context):
 
-    playlist_by_history(update)
+    if context.args:
+        genre = " ".join(context.args)
+        playlist_by_genre(update, genre)
+    else:
+        playlist_by_history(update)
 
 
 def playlist_by_history(update):
@@ -170,7 +174,6 @@ def playlist_by_history(update):
 
             listeners = int(s.get("listeners", 0))
 
-            # Skip extremely popular artists
             if listeners > 2000000:
                 continue
 
@@ -195,11 +198,44 @@ def playlist_by_history(update):
     update.message.reply_text(soundiiz_text)
 
 
+def playlist_by_genre(update, genre):
+
+    update.message.reply_text(f"Generating {genre} discovery playlist...")
+
+    tag_data = lastfm("tag.gettopartists", tag=genre, limit=50)
+
+    artists_raw = tag_data.get("topartists", {}).get("artist", [])
+
+    if not artists_raw:
+        update.message.reply_text("No artists found for that genre.")
+        return
+
+    candidate_artists = [a["name"] for a in artists_raw]
+
+    familiar = get_familiar_artists(min_plays=10)
+
+    excluded = familiar | playlist_history["artists"]
+
+    playlist_tracks = build_tracks_from_artists(candidate_artists, excluded)
+
+    if not playlist_tracks:
+        update.message.reply_text("No tracks found.")
+        return
+
+    soundiiz_text = "\n".join(playlist_tracks[:30])
+
+    update.message.reply_text(
+        f"{BOT_VERSION}\n\n{genre} discovery playlist ({len(playlist_tracks[:30])} tracks)\n"
+    )
+
+    update.message.reply_text(soundiiz_text)
+
+
 updater = Updater(TELEGRAM_TOKEN)
 dp = updater.dispatcher
 
 dp.add_handler(CommandHandler("start", start))
-dp.add_handler(CommandHandler("playlist", playlist))
+dp.add_handler(CommandHandler("playlist", playlist, pass_args=True))
 dp.add_handler(CommandHandler("now", now))
 dp.add_handler(CommandHandler("recent", recent))
 
