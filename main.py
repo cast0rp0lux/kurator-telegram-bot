@@ -4,7 +4,7 @@ import random
 from collections import Counter
 from telegram.ext import Updater, CommandHandler
 
-BOT_VERSION = "Kurator v1.3 / Musical Discovery"
+BOT_VERSION = "Kurator v1.4 / Musical Discovery"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -60,6 +60,7 @@ def start(update, context):
         "Commands:\n"
         "/playlist — discovery playlist from history\n"
         "/playlist <genre> — discovery from genre\n"
+        "/genres <keyword> — search usable Last.fm tags\n"
         "/now — current track\n"
         "/recent — recent tracks\n"
     )
@@ -99,6 +100,33 @@ def recent(update, context):
         lines.append(f"{artist} - {name}")
 
     update.message.reply_text("\n".join(lines))
+
+
+def genres(update, context):
+
+    if not context.args:
+        update.message.reply_text("Usage: /genres <keyword>")
+        return
+
+    keyword = " ".join(context.args)
+
+    data = lastfm("tag.search", tag=keyword, limit=20)
+
+    tags = data.get("results", {}).get("tagmatches", {}).get("tag", [])
+
+    if not tags:
+        update.message.reply_text("No tags found.")
+        return
+
+    tag_list = []
+
+    for tag in tags[:20]:
+        tag_list.append(tag["name"])
+
+    message = f"{BOT_VERSION}\n\nTags related to '{keyword}':\n\n"
+    message += "\n".join(tag_list)
+
+    update.message.reply_text(message)
 
 
 def build_tracks_from_artists(artist_pool, excluded_artists):
@@ -255,6 +283,7 @@ dp = updater.dispatcher
 
 dp.add_handler(CommandHandler("start", start))
 dp.add_handler(CommandHandler("playlist", playlist, pass_args=True))
+dp.add_handler(CommandHandler("genres", genres, pass_args=True))
 dp.add_handler(CommandHandler("now", now))
 dp.add_handler(CommandHandler("recent", recent))
 
