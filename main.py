@@ -4,7 +4,7 @@ import random
 from collections import Counter
 from telegram.ext import Updater, CommandHandler
 
-BOT_VERSION = "Kurator v1.4 / Musical Discovery"
+BOT_VERSION = "Kurator v1.4.1 / Musical Discovery"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -62,7 +62,7 @@ def start(update, context):
         "/playlist <genre> — discovery from genre\n"
         "/genres <keyword> — search usable Last.fm tags\n"
         "/now — current track\n"
-        "/recent — recent tracks\n"
+        "/recent — last tracks\n"
     )
 
     update.message.reply_text(message)
@@ -113,6 +113,10 @@ def genres(update, context):
     data = lastfm("tag.search", tag=keyword, limit=20)
 
     tags = data.get("results", {}).get("tagmatches", {}).get("tag", [])
+
+    # FIX: Last.fm sometimes returns dict instead of list
+    if isinstance(tags, dict):
+        tags = [tags]
 
     if not tags:
         update.message.reply_text("No tags found.")
