@@ -4,7 +4,7 @@ import random
 from collections import Counter
 from telegram.ext import Updater, CommandHandler
 
-BOT_VERSION = "Kurator v1.2 / Musical Discovery"
+BOT_VERSION = "Kurator v1.3 / Musical Discovery"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -20,6 +20,21 @@ def lastfm(method, **params):
     base = "http://ws.audioscrobbler.com/2.0/"
     p = {"method": method, "api_key": LASTFM_API, "format": "json", **params}
     return requests.get(base, params=p).json()
+
+
+def get_recent_artists():
+    data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=600)
+
+    tracks = data.get("recenttracks", {}).get("track", [])
+
+    artists = set()
+
+    for t in tracks:
+        artist = t["artist"]["#text"]
+        if artist:
+            artists.add(artist.lower())
+
+    return artists
 
 
 def get_familiar_artists(min_plays=10):
@@ -143,9 +158,11 @@ def playlist_by_history(update):
 
     raw_tracks = data.get("recenttracks", {}).get("track", [])
 
+    recent_artists = get_recent_artists()
+
     familiar = get_familiar_artists(min_plays=10)
 
-    excluded_artists = familiar | playlist_history["artists"]
+    excluded_artists = recent_artists | familiar | playlist_history["artists"]
 
     artist_counts = Counter(
         t["artist"]["#text"] for t in raw_tracks if t["artist"]["#text"]
@@ -210,11 +227,13 @@ def playlist_by_genre(update, genre):
         update.message.reply_text("No artists found for that genre.")
         return
 
-    candidate_artists = [a["name"] for a in artists_raw]
+    recent_artists = get_recent_artists()
 
     familiar = get_familiar_artists(min_plays=10)
 
-    excluded = familiar | playlist_history["artists"]
+    excluded = recent_artists | familiar | playlist_history["artists"]
+
+    candidate_artists = [a["name"] for a in artists_raw]
 
     playlist_tracks = build_tracks_from_artists(candidate_artists, excluded)
 
