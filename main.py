@@ -1,310 +1,322 @@
 import os
 import requests
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from telegram.ext import Updater, CommandHandler
 
-BOT_VERSION = "Kurator v1.4.5 / Musical Discovery"
+BOT_VERSION = "Kurator v2.0 / Deep Digging Engine"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
-playlist_history = {
-    "artists": set(),
-    "tracks": set(),
+# -------- CONFIG --------
+
+SCRIBBLE_LIMIT = 600
+SEED_ARTISTS = 25
+SIMILAR_EXPANSION = 40
+PLAYLIST_SIZE = 30
+
+RARE_LISTENER_THRESHOLD = 50000
+
+TAG_BLACKLIST = {
+"seen live","favorites","favorite","female vocalists","male vocalists",
+"british","american","my favorites","love","awesome","good","bad"
 }
 
+history = {
+"artists":set(),
+"tracks":set()
+}
+
+# -------- API --------
 
 def lastfm(method, **params):
-    base = "http://ws.audioscrobbler.com/2.0/"
-    p = {"method": method, "api_key": LASTFM_API, "format": "json", **params}
-    return requests.get(base, params=p).json()
 
+    base="http://ws.audioscrobbler.com/2.0/"
 
-def get_recent_artists():
-    data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=600)
-    tracks = data.get("recenttracks", {}).get("track", [])
+    payload={
+        "method":method,
+        "api_key":LASTFM_API,
+        "format":"json",
+        **params
+    }
 
-    artists = set()
+    r=requests.get(base,params=payload)
+
+    try:
+        return r.json()
+    except:
+        return {}
+
+# -------- UTILITIES --------
+
+def normalize(name):
+    return name.lower().strip()
+
+# -------- USER DATA --------
+
+def get_recent_tracks():
+
+    data=lastfm("user.getrecenttracks",
+        user=LASTFM_USER,
+        limit=SCRIBBLE_LIMIT
+    )
+
+    return data.get("recenttracks",{}).get("track",[])
+
+def extract_seed_artists():
+
+    tracks=get_recent_tracks()
+
+    counter=Counter()
 
     for t in tracks:
-        artist = t["artist"]["#text"]
+
+        artist=t["artist"]["#text"]
+
         if artist:
-            artists.add(artist.lower())
+            counter[artist]+=1
 
-    return artists
+    seeds=[a for a,_ in counter.most_common(SEED_ARTISTS)]
 
+    return seeds
 
-def get_familiar_artists(min_plays=10):
-    data = lastfm("user.gettopartists", user=LASTFM_USER, period="overall", limit=500)
-    artists = data.get("topartists", {}).get("artist", [])
+# -------- GRAPH ENGINE --------
 
-    familiar = set()
+def expand_artist_graph(seed_artists):
 
-    for a in artists:
-        try:
-            if int(a.get("playcount", 0)) >= min_plays:
-                familiar.add(a["name"].lower())
-        except:
-            pass
+    pool=set()
 
-    return familiar
+    for artist in seed_artists:
 
+        data=lastfm("artist.getsimilar",
+            artist=artist,
+            limit=SIMILAR_EXPANSION
+        )
 
-def start(update, context):
+        sims=data.get("similarartists",{}).get("artist",[])
 
-    message = (
-        f"{BOT_VERSION}\n\n"
-        "Commands:\n"
-        "/playlist — discovery playlist from history\n"
-        "/playlist <genre> — discovery from genre\n"
-        "/genre <keyword> — explore related genres\n"
-        "/now — current track\n"
-        "/recent — last tracks\n"
-    )
+        for s in sims:
 
-    update.message.reply_text(message)
+            name=s["name"]
+            listeners=int(s.get("listeners",0))
 
-
-def now(update, context):
-
-    data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=1)
-
-    tracks = data.get("recenttracks", {}).get("track", [])
-
-    if not tracks:
-        update.message.reply_text("No recent track found.")
-        return
-
-    t = tracks[0]
-
-    artist = t["artist"]["#text"]
-    name = t["name"]
-
-    update.message.reply_text(f"{artist} - {name}")
-
-
-def recent(update, context):
-
-    data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=5)
-
-    tracks = data.get("recenttracks", {}).get("track", [])
-
-    lines = []
-
-    for t in tracks:
-        artist = t["artist"]["#text"]
-        name = t["name"]
-        lines.append(f"{artist} - {name}")
-
-    update.message.reply_text("\n".join(lines))
-
-
-# --- NUEVO /genre ---
-def genre(update, context):
-
-    if not context.args:
-        update.message.reply_text("Usage: /genre <keyword>")
-        return
-
-    keyword = " ".join(context.args).lower()
-
-    # 1. artistas representativos del género
-    data = lastfm("tag.gettopartists", tag=keyword, limit=15)
-
-    artists = data.get("topartists", {}).get("artist", [])
-
-    if not artists:
-        update.message.reply_text("No artists found for that genre.")
-        return
-
-    tag_counter = Counter()
-
-    # 2. extraer tags de esos artistas
-    for artist in artists[:10]:
-
-        name = artist["name"]
-
-        tag_data = lastfm("artist.gettoptags", artist=name)
-
-        tags = tag_data.get("toptags", {}).get("tag", [])
-
-        for tag in tags:
-
-            tag_name = tag["name"].lower()
-
-            if tag_name != keyword:
-                tag_counter[tag_name] += 1
-
-    if not tag_counter:
-        update.message.reply_text("No related genres found.")
-        return
-
-    results = [tag for tag, _ in tag_counter.most_common(20)]
-
-    message = f"{BOT_VERSION}\n\nGenres related to '{keyword}':\n\n"
-    message += "\n".join(results)
-
-    update.message.reply_text(message)
-
-
-def build_tracks_from_artists(artist_pool, excluded_artists):
-
-    playlist_tracks = []
-
-    for artist in artist_pool:
-
-        if len(playlist_tracks) >= 30:
-            break
-
-        if artist.lower() in excluded_artists:
-            continue
-
-        top_data = lastfm("artist.gettoptracks", artist=artist, limit=10)
-
-        tracks = top_data.get("toptracks", {}).get("track", [])
-
-        if not tracks:
-            continue
-
-        candidates = tracks[3:] if len(tracks) > 3 else tracks
-
-        random.shuffle(candidates)
-
-        for t in candidates:
-
-            track_key = f"{artist.lower()} - {t['name'].lower()}"
-
-            if track_key not in playlist_history["tracks"]:
-
-                playlist_tracks.append(f"{artist} - {t['name']}")
-
-                playlist_history["artists"].add(artist.lower())
-                playlist_history["tracks"].add(track_key)
-
-                break
-
-    return playlist_tracks
-
-
-def playlist(update, context):
-
-    if context.args:
-        genre_name = " ".join(context.args)
-        playlist_by_genre(update, genre_name)
-    else:
-        playlist_by_history(update)
-
-
-def playlist_by_history(update):
-
-    update.message.reply_text("Generating discovery playlist...")
-
-    data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=600)
-
-    raw_tracks = data.get("recenttracks", {}).get("track", [])
-
-    recent_artists = get_recent_artists()
-    familiar = get_familiar_artists(min_plays=10)
-
-    excluded_artists = recent_artists | familiar | playlist_history["artists"]
-
-    artist_counts = Counter(
-        t["artist"]["#text"] for t in raw_tracks if t["artist"]["#text"]
-    )
-
-    top_artists = [artist for artist, _ in artist_counts.most_common(20)]
-
-    similar_artists = []
-    seen_similar = set()
-
-    for artist in top_artists:
-
-        if len(similar_artists) >= 60:
-            break
-
-        sim_data = lastfm("artist.getsimilar", artist=artist, limit=50)
-
-        candidates = sim_data.get("similarartists", {}).get("artist", [])
-
-        random.shuffle(candidates)
-
-        for s in candidates:
-
-            name = s["name"]
-            name_lower = name.lower()
-
-            listeners = int(s.get("listeners", 0))
-
-            if listeners > 2000000:
+            if listeners>2000000:
                 continue
 
-            if name_lower not in excluded_artists and name_lower not in seen_similar:
+            pool.add(name)
 
-                similar_artists.append(name)
-                seen_similar.add(name_lower)
+    return list(pool)
 
-    playlist_tracks = build_tracks_from_artists(similar_artists, excluded_artists)
+# -------- TAG ENGINE --------
 
-    if not playlist_tracks:
+def collect_scene_tags(artists):
 
-        update.message.reply_text("No new tracks found.")
+    tag_counter=Counter()
+
+    for a in artists[:20]:
+
+        data=lastfm("artist.gettoptags",artist=a)
+
+        tags=data.get("toptags",{}).get("tag",[])
+
+        for t in tags:
+
+            tag=t["name"].lower()
+
+            if tag in TAG_BLACKLIST:
+                continue
+
+            if len(tag)<3:
+                continue
+
+            tag_counter[tag]+=1
+
+    return tag_counter
+
+# -------- TRACK ENGINE --------
+
+def select_tracks(artists):
+
+    tracks=[]
+
+    random.shuffle(artists)
+
+    for a in artists:
+
+        if len(tracks)>=PLAYLIST_SIZE:
+            break
+
+        if normalize(a) in history["artists"]:
+            continue
+
+        data=lastfm("artist.gettoptracks",
+            artist=a,
+            limit=10
+        )
+
+        top=data.get("toptracks",{}).get("track",[])
+
+        if not top:
+            continue
+
+        random.shuffle(top)
+
+        for t in top:
+
+            key=f"{normalize(a)}-{normalize(t['name'])}"
+
+            if key in history["tracks"]:
+                continue
+
+            tracks.append(f"{a} - {t['name']}")
+
+            history["artists"].add(normalize(a))
+            history["tracks"].add(key)
+
+            break
+
+    return tracks
+
+# -------- COMMANDS --------
+
+def start(update,context):
+
+    msg=f"""{BOT_VERSION}
+
+Commands
+
+/dig — deep discovery playlist
+/scene <genre> — map genre scene
+/hole <artist> — rabbit hole
+/rare — rare artists
+/playlist — classic discovery
+"""
+
+    update.message.reply_text(msg)
+
+# -------- DIGGING --------
+
+def dig(update,context):
+
+    update.message.reply_text("Digging deep…")
+
+    seeds=extract_seed_artists()
+
+    graph=expand_artist_graph(seeds)
+
+    tracks=select_tracks(graph)
+
+    if not tracks:
+        update.message.reply_text("Nothing found.")
         return
 
-    soundiiz_text = "\n".join(playlist_tracks[:30])
+    update.message.reply_text("\n".join(tracks))
 
-    update.message.reply_text(
-        f"{BOT_VERSION}\n\nDiscovery playlist ({len(playlist_tracks[:30])} tracks)\n"
+# -------- SCENE --------
+
+def scene(update,context):
+
+    if not context.args:
+        update.message.reply_text("Usage: /scene <genre>")
+        return
+
+    genre=" ".join(context.args)
+
+    data=lastfm("tag.gettopartists",
+        tag=genre,
+        limit=30
     )
 
-    update.message.reply_text(soundiiz_text)
+    artists=data.get("topartists",{}).get("artist",[])
 
+    names=[a["name"] for a in artists]
 
-def playlist_by_genre(update, genre_name):
+    tags=collect_scene_tags(names)
 
-    update.message.reply_text(f"Generating {genre_name} discovery playlist...")
+    results=[t for t,_ in tags.most_common(20)]
 
-    tag_data = lastfm("tag.gettopartists", tag=genre_name, limit=50)
+    msg=f"{BOT_VERSION}\n\nScene around '{genre}':\n\n"
+    msg+="\n".join(results)
 
-    artists_raw = tag_data.get("topartists", {}).get("artist", [])
+    update.message.reply_text(msg)
 
-    if not artists_raw:
-        update.message.reply_text("No artists found for that genre.")
+# -------- RABBIT HOLE --------
+
+def hole(update,context):
+
+    if not context.args:
+        update.message.reply_text("Usage: /hole <artist>")
         return
 
-    recent_artists = get_recent_artists()
-    familiar = get_familiar_artists(min_plays=10)
+    artist=" ".join(context.args)
 
-    excluded = recent_artists | familiar | playlist_history["artists"]
-
-    candidate_artists = [a["name"] for a in artists_raw]
-
-    playlist_tracks = build_tracks_from_artists(candidate_artists, excluded)
-
-    if not playlist_tracks:
-        update.message.reply_text("No tracks found.")
-        return
-
-    soundiiz_text = "\n".join(playlist_tracks[:30])
-
-    update.message.reply_text(
-        f"{BOT_VERSION}\n\n{genre_name} discovery playlist ({len(playlist_tracks[:30])} tracks)\n"
+    data=lastfm("artist.getsimilar",
+        artist=artist,
+        limit=60
     )
 
-    update.message.reply_text(soundiiz_text)
+    sims=data.get("similarartists",{}).get("artist",[])
 
+    artists=[a["name"] for a in sims]
 
-updater = Updater(TELEGRAM_TOKEN)
-dp = updater.dispatcher
+    tracks=select_tracks(artists)
 
-dp.add_handler(CommandHandler("start", start))
-dp.add_handler(CommandHandler("playlist", playlist, pass_args=True))
-dp.add_handler(CommandHandler("genre", genre, pass_args=True))
-dp.add_handler(CommandHandler("now", now))
-dp.add_handler(CommandHandler("recent", recent))
+    update.message.reply_text("\n".join(tracks))
 
-print("Kurator running...")
+# -------- RARE --------
+
+def rare(update,context):
+
+    seeds=extract_seed_artists()
+
+    graph=expand_artist_graph(seeds)
+
+    rare=[]
+
+    for a in graph:
+
+        data=lastfm("artist.getinfo",artist=a)
+
+        listeners=int(
+            data.get("artist",{})
+            .get("stats",{})
+            .get("listeners",0)
+        )
+
+        if listeners<RARE_LISTENER_THRESHOLD:
+            rare.append(a)
+
+    tracks=select_tracks(rare)
+
+    update.message.reply_text("\n".join(tracks))
+
+# -------- CLASSIC PLAYLIST --------
+
+def playlist(update,context):
+
+    seeds=extract_seed_artists()
+
+    graph=expand_artist_graph(seeds)
+
+    tracks=select_tracks(graph)
+
+    update.message.reply_text("\n".join(tracks))
+
+# -------- TELEGRAM --------
+
+updater=Updater(TELEGRAM_TOKEN)
+dp=updater.dispatcher
+
+dp.add_handler(CommandHandler("start",start))
+dp.add_handler(CommandHandler("dig",dig))
+dp.add_handler(CommandHandler("scene",scene))
+dp.add_handler(CommandHandler("hole",hole))
+dp.add_handler(CommandHandler("rare",rare))
+dp.add_handler(CommandHandler("playlist",playlist))
+
+print("Kurator v2 running")
 
 updater.start_polling()
 updater.idle()
