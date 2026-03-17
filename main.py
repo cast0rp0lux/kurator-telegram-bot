@@ -1,6 +1,7 @@
 import os
 import requests
 import random
+import time
 from collections import Counter
 
 from telegram import (
@@ -19,7 +20,7 @@ from telegram.ext import (
 # CONFIG
 # =========================
 
-VERSION = "Kurator v2.1.1"
+VERSION = "Kurator v2.1.2"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -35,16 +36,19 @@ def lastfm(method, **params):
     return requests.get(base, params=p).json()
 
 
-def get_recent_artists(limit=600):
+def get_recent_tracks(limit=1000):
     data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=limit)
-    tracks = data.get("recenttracks", {}).get("track", [])
+    return data.get("recenttracks", {}).get("track", [])
+
+
+def get_recent_artists(limit=600):
+    tracks = get_recent_tracks(limit)
     return [t["artist"]["#text"] for t in tracks if t.get("artist")]
 
 
 def get_artist_tags(artist):
     data = lastfm("artist.gettoptags", artist=artist)
-    tags = data.get("toptags", {}).get("tag", [])
-    return [t["name"] for t in tags[:5]]
+    return [t["name"] for t in data.get("toptags", {}).get("tag", [])[:5]]
 
 
 def build_playlist(artists):
@@ -58,7 +62,6 @@ def build_playlist(artists):
         if not tracks:
             continue
 
-        # evitar hits
         candidates = tracks[3:] if len(tracks) > 3 else tracks
         random.shuffle(candidates)
 
@@ -75,30 +78,43 @@ def build_playlist(artists):
     return playlist
 
 
-def spotify_link(query):
-    return f"https://open.spotify.com/search/{query.replace(' ', '%20')}"
+# =========================
+# SPOTIFY / YOUTUBE
+# =========================
+
+def spotify_link(tracks):
+    queries = []
+
+    for t in tracks[:10]:
+        try:
+            artist, song = t.split(" - ", 1)
+            q = f'track:"{song}" artist:"{artist}"'
+            queries.append(q)
+        except:
+            continue
+
+    full_query = " OR ".join(queries)
+    return f"https://open.spotify.com/search/{full_query.replace(' ', '%20')}"
 
 
-def youtube_link(query):
+def youtube_link(tracks):
+    query = " ".join(tracks[:5])
     return f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
 
 # =========================
-# UI BOTONES
+# BOTONES
 # =========================
 
 def build_buttons(tracks):
-    query = " ".join(tracks[:5])
-
     keyboard = [
         [
-            InlineKeyboardButton("Spotify", url=spotify_link(query)),
-            InlineKeyboardButton("YouTube", url=youtube_link(query))
+            InlineKeyboardButton("Spotify", url=spotify_link(tracks)),
+            InlineKeyboardButton("YouTube", url=youtube_link(tracks))
         ],
         [
-            InlineKeyboardButton("Copy Playlist", callback_data="copy_playlist")
+            InlineKeyboardButton("Copy ready", callback_data="copy_playlist")
         ]
     ]
-
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -107,7 +123,28 @@ async def copy_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     playlist_text = context.user_data.get("last_playlist", "No playlist available")
-    await query.message.reply_text(playlist_text)
+
+    await query.message.reply_text(
+        "Copy below 👇\n\n" + f"```\n{playlist_text}\n```",
+        parse_mode="Markdown"
+    )
+
+# =========================
+# TIME FILTER
+# =========================
+
+def filter_by_days(tracks, days):
+    now = int(time.time())
+    cutoff = now - days * 86400
+
+    filtered = []
+
+    for t in tracks:
+        uts = t.get("date", {}).get("uts")
+        if uts and int(uts) >= cutoff:
+            filtered.append(t)
+
+    return filtered
 
 # =========================
 # COMMANDS
@@ -126,14 +163,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "DISCOVER\n"
         "/playlist\n"
         "/playlist <genre>\n"
-        "/dig\n"
         "/trail <artist>\n"
         "/scene <genre>\n"
         "/rare\n\n"
         "STATS\n"
-        "/obsession <artist>\n"
-        "/toptracks\n"
-        "/topartists\n\n"
+        "/obsession\n"
+        "/toptracks <days>\n"
+        "/topartists <days>\n\n"
         "INFO\n"
         "/help"
     )
@@ -141,7 +177,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 # =========================
-# PLAYLIST (FIXED)
+# PLAYLIST
 # =========================
 
 async def playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,17 +189,13 @@ async def playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if genre:
         tag_data = lastfm("tag.gettopartists", tag=genre, limit=100)
         artists = [a["name"] for a in tag_data.get("topartists", {}).get("artist", [])]
-
-        # 🔥 CLAVE: evitar mainstream
         artists = artists[15:80]
-
     else:
         artists = get_recent_artists()
 
     random.shuffle(artists)
-    selected = artists[:40]
 
-    tracks = build_playlist(selected)
+    tracks = build_playlist(artists[:40])
     text = "\n".join(tracks)
 
     context.user_data["last_playlist"] = text
@@ -174,7 +206,7 @@ async def playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
-# TRAIL (OK)
+# TRAIL
 # =========================
 
 async def trail(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,13 +222,13 @@ async def trail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sim1 = lastfm("artist.getsimilar", artist=artist, limit=20)
     artists1 = [a["name"] for a in sim1.get("similarartists", {}).get("artist", [])]
 
-    second_layer = []
+    second = []
 
     for a in artists1[:5]:
         sim2 = lastfm("artist.getsimilar", artist=a, limit=10)
-        second_layer += [x["name"] for x in sim2.get("similarartists", {}).get("artist", [])]
+        second += [x["name"] for x in sim2.get("similarartists", {}).get("artist", [])]
 
-    all_artists = list(set(artists1 + second_layer))
+    all_artists = list(set(artists1 + second))
 
     random.shuffle(all_artists)
     tracks = build_playlist(all_artists[:40])
@@ -204,7 +236,7 @@ async def trail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(tracks))
 
 # =========================
-# RARE (MEJORADO)
+# RARE
 # =========================
 
 async def rare(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -212,21 +244,17 @@ async def rare(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Searching rare artists…")
 
     artists = get_recent_artists()
-
-    # frecuencia → detectar sobreescuchados
     counts = Counter(artists)
 
-    # quedarnos con los menos repetidos
-    rare_artists = [a for a, c in counts.items() if c <= 2]
+    rare = [a for a, c in counts.items() if c <= 2]
 
-    random.shuffle(rare_artists)
-
-    tracks = build_playlist(rare_artists[:40])
+    random.shuffle(rare)
+    tracks = build_playlist(rare[:40])
 
     await update.message.reply_text("\n".join(tracks))
 
 # =========================
-# SCENE (REHECHO)
+# SCENE
 # =========================
 
 async def scene(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -245,18 +273,13 @@ async def scene(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tag_counter = Counter()
 
     for artist in artists[:20]:
-        tags = get_artist_tags(artist)
-        tag_counter.update(tags)
+        tag_counter.update(get_artist_tags(artist))
 
-    # eliminar el propio género
-    if genre in tag_counter:
-        del tag_counter[genre]
-
-    common_tags = [t for t, _ in tag_counter.most_common(15)]
+    tag_counter.pop(genre, None)
 
     lines = [f"{genre}\n"]
 
-    for t in common_tags:
+    for t, _ in tag_counter.most_common(15):
         lines.append(f"├ {t}")
 
     await update.message.reply_text("\n".join(lines))
@@ -267,39 +290,50 @@ async def scene(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def obsession(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not context.args:
-        await update.message.reply_text("Usage: /obsession <artist>")
+    tracks = get_recent_tracks(1000)
+    tracks = filter_by_days(tracks, 30)
+
+    artists = [t["artist"]["#text"] for t in tracks if t.get("artist")]
+
+    counts = Counter(artists)
+
+    if not counts:
+        await update.message.reply_text("No data")
         return
 
-    artist = " ".join(context.args)
+    artist, plays = counts.most_common(1)[0]
 
-    data = lastfm("user.gettopartists", user=LASTFM_USER, limit=200)
-    artists = data.get("topartists", {}).get("artist", [])
-
-    for a in artists:
-        if a["name"].lower() == artist.lower():
-            await update.message.reply_text(f"{artist}: {a['playcount']} plays")
-            return
-
-    await update.message.reply_text("Artist not found")
+    await update.message.reply_text(f"{artist} — {plays} plays (last 30 days)")
 
 
 async def toptracks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    data = lastfm("user.gettoptracks", user=LASTFM_USER, limit=20)
-    tracks = data.get("toptracks", {}).get("track", [])
+    days = int(context.args[0]) if context.args else 30
 
-    lines = [f"{t['artist']['name']} - {t['name']}" for t in tracks]
+    tracks = get_recent_tracks(1000)
+    tracks = filter_by_days(tracks, days)
+
+    names = [f"{t['artist']['#text']} - {t['name']}" for t in tracks]
+
+    counts = Counter(names)
+
+    lines = [f"{n} ({c})" for n, c in counts.most_common(20)]
 
     await update.message.reply_text("\n".join(lines))
 
 
 async def topartists(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    data = lastfm("user.gettopartists", user=LASTFM_USER, limit=15)
-    artists = data.get("topartists", {}).get("artist", [])
+    days = int(context.args[0]) if context.args else 30
 
-    lines = [f"{a['name']} ({a['playcount']})" for a in artists]
+    tracks = get_recent_tracks(1000)
+    tracks = filter_by_days(tracks, days)
+
+    artists = [t["artist"]["#text"] for t in tracks if t.get("artist")]
+
+    counts = Counter(artists)
+
+    lines = [f"{a} ({c})" for a, c in counts.most_common(15)]
 
     await update.message.reply_text("\n".join(lines))
 
