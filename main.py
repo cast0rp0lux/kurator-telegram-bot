@@ -1,6 +1,8 @@
 import os
 import requests
 import random
+import time
+import urllib.parse
 from collections import Counter
 
 from telegram import (
@@ -19,13 +21,11 @@ from telegram.ext import (
 # CONFIG
 # =========================
 
-VERSION = "Kurator v2.0.2"
+VERSION = "Kurator v2.1.2"
 
 TOKEN = os.environ["BOT_TOKEN"]
 LASTFM_API = os.environ["LASTFM_API_KEY"]
 LASTFM_USER = "burbq"
-
-user_data_store = {}
 
 # =========================
 # LASTFM
@@ -37,17 +37,22 @@ def lastfm(method, **params):
     return requests.get(base, params=p).json()
 
 
-def get_recent_tracks(limit=300):
+def get_recent_tracks(limit=1000):
     data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=limit)
     return data.get("recenttracks", {}).get("track", [])
 
 
-def get_recent_artists(limit=300):
+def get_recent_artists(limit=600):
     tracks = get_recent_tracks(limit)
     return [t["artist"]["#text"] for t in tracks if t.get("artist")]
 
+
+def get_artist_tags(artist):
+    data = lastfm("artist.gettoptags", artist=artist)
+    return [t["name"] for t in data.get("toptags", {}).get("tag", [])[:5]]
+
 # =========================
-# PLAYLIST CORE (NO TOCAR)
+# PLAYLIST CORE
 # =========================
 
 def build_playlist(artists):
@@ -77,12 +82,33 @@ def build_playlist(artists):
     return playlist
 
 # =========================
-# BOTONES (v2.0.2)
+# LINKS
 # =========================
 
-def build_buttons():
+def spotify_link(tracks):
+    query = " ".join(tracks[:8])
+    encoded = urllib.parse.quote(query)
+    return f"https://open.spotify.com/search/{encoded}"
+
+
+def youtube_link(tracks):
+    query = " ".join(tracks[:5])
+    encoded = urllib.parse.quote(query)
+    return f"https://www.youtube.com/results?search_query={encoded}"
+
+# =========================
+# BUTTONS
+# =========================
+
+def build_buttons(tracks):
     keyboard = [
-        [InlineKeyboardButton("Copy ready", callback_data="copy_playlist")]
+        [
+            InlineKeyboardButton("Spotify", url=spotify_link(tracks)),
+            InlineKeyboardButton("YouTube", url=youtube_link(tracks))
+        ],
+        [
+            InlineKeyboardButton("Copy ready", callback_data="copy_playlist")
+        ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -91,16 +117,24 @@ async def copy_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    user_id = query.from_user.id
-    playlist_text = user_data_store.get(user_id, "")
-
-    if not playlist_text:
-        await query.message.reply_text("No playlist to copy.")
-        return
+    playlist_text = context.user_data.get("last_playlist", "")
 
     await query.message.reply_text(
         "Copy below 👇\n\n" + playlist_text
     )
+
+# =========================
+# TIME FILTER
+# =========================
+
+def filter_by_days(tracks, days):
+    now = int(time.time())
+    cutoff = now - days * 86400
+
+    return [
+        t for t in tracks
+        if t.get("date", {}).get("uts") and int(t["date"]["uts"]) >= cutoff
+    ]
 
 # =========================
 # COMMANDS
@@ -108,45 +142,64 @@ async def copy_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"{VERSION}\nMusical Discovery Engine"
+        f"{VERSION}\nMusical Discovery Engine\n\nType /help"
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"{VERSION}\n\n"
+        "DISCOVER\n"
         "/playlist\n"
+        "/playlist <genre>\n"
         "/trail <artist>\n"
-        "/rare\n"
+        "/scene <genre>\n"
+        "/rare\n\n"
+        "STATS\n"
+        "/obsession\n"
+        "/toptracks <days>\n"
+        "/topartists <days>\n\n"
+        "INFO\n"
         "/help"
     )
     await update.message.reply_text(msg)
 
 # =========================
-# PLAYLIST (v2.0.1 aplicado)
+# PLAYLIST
 # =========================
 
 async def playlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # v2.0.1 → mensaje de estado
     await update.message.reply_text("Building discovery playlist…")
 
-    artists = get_recent_artists()
+    genre = " ".join(context.args)
+
+    if genre:
+        data = lastfm("tag.gettopartists", tag=genre, limit=100)
+        artists = [a["name"] for a in data.get("topartists", {}).get("artist", [])]
+
+        if len(artists) < 10:
+            artists = get_recent_artists()
+        else:
+            artists = artists[10:80]
+
+    else:
+        artists = get_recent_artists()
+
     random.shuffle(artists)
 
     tracks = build_playlist(artists[:40])
     text = "\n".join(tracks)
 
-    user_id = update.message.from_user.id
-    user_data_store[user_id] = text
+    context.user_data["last_playlist"] = text
 
     await update.message.reply_text(
         text,
-        reply_markup=build_buttons()
+        reply_markup=build_buttons(tracks)
     )
 
 # =========================
-# TRAIL (solo mensaje añadido)
+# TRAIL
 # =========================
 
 async def trail(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -157,35 +210,117 @@ async def trail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     artist = " ".join(context.args)
 
-    # v2.0.1
     await update.message.reply_text(f"Following trail from {artist}…")
 
-    sim = lastfm("artist.getsimilar", artist=artist, limit=20)
-    artists = [a["name"] for a in sim.get("similarartists", {}).get("artist", [])]
+    sim1 = lastfm("artist.getsimilar", artist=artist, limit=20)
+    artists1 = [a["name"] for a in sim1.get("similarartists", {}).get("artist", [])]
 
-    random.shuffle(artists)
-    tracks = build_playlist(artists[:40])
+    second = []
+
+    for a in artists1[:5]:
+        sim2 = lastfm("artist.getsimilar", artist=a, limit=10)
+        second += [x["name"] for x in sim2.get("similarartists", {}).get("artist", [])]
+
+    all_artists = list(set(artists1 + second))
+
+    random.shuffle(all_artists)
+    tracks = build_playlist(all_artists[:40])
 
     await update.message.reply_text("\n".join(tracks))
 
 # =========================
-# RARE (solo mensaje añadido)
+# RARE
 # =========================
 
 async def rare(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # v2.0.1
     await update.message.reply_text("Searching rare artists…")
 
     artists = get_recent_artists()
     counts = Counter(artists)
 
-    rare_artists = [a for a, c in counts.items() if c <= 2]
+    rare = [a for a, c in counts.items() if c <= 2]
 
-    random.shuffle(rare_artists)
-    tracks = build_playlist(rare_artists[:40])
+    random.shuffle(rare)
+    tracks = build_playlist(rare[:40])
 
     await update.message.reply_text("\n".join(tracks))
+
+# =========================
+# SCENE
+# =========================
+
+async def scene(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not context.args:
+        await update.message.reply_text("Usage: /scene <genre>")
+        return
+
+    genre = " ".join(context.args)
+
+    await update.message.reply_text("Mapping scene…")
+
+    data = lastfm("tag.gettopartists", tag=genre, limit=50)
+    artists = [a["name"] for a in data.get("topartists", {}).get("artist", [])]
+
+    tag_counter = Counter()
+
+    for artist in artists[:20]:
+        tag_counter.update(get_artist_tags(artist))
+
+    tag_counter.pop(genre, None)
+
+    lines = [f"{genre}\n"]
+
+    for t, _ in tag_counter.most_common(15):
+        lines.append(f"├ {t}")
+
+    await update.message.reply_text("\n".join(lines))
+
+# =========================
+# STATS
+# =========================
+
+async def obsession(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    tracks = filter_by_days(get_recent_tracks(1000), 30)
+    artists = [t["artist"]["#text"] for t in tracks if t.get("artist")]
+
+    if not artists:
+        await update.message.reply_text("No data")
+        return
+
+    artist, plays = Counter(artists).most_common(1)[0]
+
+    await update.message.reply_text(f"{artist} — {plays} plays (30 days)")
+
+
+async def toptracks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    days = int(context.args[0]) if context.args else 30
+
+    tracks = filter_by_days(get_recent_tracks(1000), days)
+    names = [f"{t['artist']['#text']} - {t['name']}" for t in tracks]
+
+    counts = Counter(names)
+
+    lines = [f"{n} ({c})" for n, c in counts.most_common(20)]
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def topartists(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    days = int(context.args[0]) if context.args else 30
+
+    tracks = filter_by_days(get_recent_tracks(1000), days)
+    artists = [t["artist"]["#text"] for t in tracks if t.get("artist")]
+
+    counts = Counter(artists)
+
+    lines = [f"{a} ({c})" for a, c in counts.most_common(15)]
+
+    await update.message.reply_text("\n".join(lines))
 
 # =========================
 # APP
@@ -198,7 +333,12 @@ app.add_handler(CommandHandler("help", help_command))
 
 app.add_handler(CommandHandler("playlist", playlist))
 app.add_handler(CommandHandler("trail", trail))
+app.add_handler(CommandHandler("scene", scene))
 app.add_handler(CommandHandler("rare", rare))
+
+app.add_handler(CommandHandler("obsession", obsession))
+app.add_handler(CommandHandler("toptracks", toptracks))
+app.add_handler(CommandHandler("topartists", topartists))
 
 app.add_handler(CallbackQueryHandler(copy_playlist, pattern="copy_playlist"))
 
