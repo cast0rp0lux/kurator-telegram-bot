@@ -203,12 +203,12 @@ def help_command(update, context):
 
 DISCOVER
 
-/playlist
-/dig
-/trail <artist>
-/scene <genre>
-/rare
-
+/playlist — discovery playlist
+/dig — deep digging
+/trail <artist> — explore similar artists
+/scene <genre> — explore scene
+/rare — rare artists
+/help — commands
 """
 
     update.message.reply_text(msg)
