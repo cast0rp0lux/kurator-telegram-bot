@@ -4,7 +4,7 @@ import random
 from collections import Counter, defaultdict
 from telegram.ext import Updater, CommandHandler
 
-BOT_VERSION = "Kurator v2.0 / Deep Digging Engine"
+BOT_VERSION = "Kurator | Music Discovery Engine (v2.0.1)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -185,13 +185,30 @@ def start(update,context):
 
     msg=f"""{BOT_VERSION}
 
-Commands
+DISCOVER
 
-/dig — deep discovery playlist
-/scene <genre> — map genre scene
-/hole <artist> — rabbit hole
+/playlist — discovery playlist
+/dig — deep digging
+/trail <artist> — explore similar artists
+/scene <genre> — explore scene
 /rare — rare artists
-/playlist — classic discovery
+/help — commands
+"""
+
+    update.message.reply_text(msg)
+
+def help_command(update, context):
+
+    msg=f"""{BOT_VERSION}
+
+DISCOVER
+
+/playlist
+/dig
+/trail <artist>
+/scene <genre>
+/rare
+
 """
 
     update.message.reply_text(msg)
@@ -222,6 +239,8 @@ def scene(update,context):
         update.message.reply_text("Usage: /scene <genre>")
         return
 
+    update.message.reply_text("Mapping scene…")
+
     genre=" ".join(context.args)
 
     data=lastfm("tag.gettopartists",
@@ -242,15 +261,17 @@ def scene(update,context):
 
     update.message.reply_text(msg)
 
-# -------- RABBIT HOLE --------
+# -------- TRAIL --------
 
-def hole(update,context):
+def trail(update,context):
 
     if not context.args:
-        update.message.reply_text("Usage: /hole <artist>")
+        update.message.reply_text("Usage: /trail <artist>")
         return
 
     artist=" ".join(context.args)
+
+    update.message.reply_text(f"Following trail from {artist}…")
 
     data=lastfm("artist.getsimilar",
         artist=artist,
@@ -268,6 +289,8 @@ def hole(update,context):
 # -------- RARE --------
 
 def rare(update,context):
+
+    update.message.reply_text("Searching rare artists…")
 
     seeds=extract_seed_artists()
 
@@ -292,9 +315,11 @@ def rare(update,context):
 
     update.message.reply_text("\n".join(tracks))
 
-# -------- CLASSIC PLAYLIST --------
+# -------- PLAYLIST --------
 
 def playlist(update,context):
+
+    update.message.reply_text("Building discovery playlist…")
 
     seeds=extract_seed_artists()
 
@@ -310,13 +335,14 @@ updater=Updater(TELEGRAM_TOKEN)
 dp=updater.dispatcher
 
 dp.add_handler(CommandHandler("start",start))
+dp.add_handler(CommandHandler("help",help_command))
 dp.add_handler(CommandHandler("dig",dig))
 dp.add_handler(CommandHandler("scene",scene))
-dp.add_handler(CommandHandler("hole",hole))
+dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
 dp.add_handler(CommandHandler("playlist",playlist))
 
-print("Kurator v2 running")
+print("Kurator v2.0.1 running")
 
 updater.start_polling()
 updater.idle()
