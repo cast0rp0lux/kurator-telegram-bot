@@ -5,7 +5,7 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.2.0)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.2.1)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -18,6 +18,7 @@ SIMILAR_EXPANSION = 40
 PLAYLIST_SIZE = 30
 
 history = {"artists":set(),"tracks":set()}
+tag_cache = {}
 
 # -------- LASTFM --------
 
@@ -30,6 +31,18 @@ def lastfm(method, **params):
 
 def normalize(name):
     return name.lower().strip()
+
+def is_valid_tag(tag):
+    if tag in tag_cache:
+        return tag_cache[tag]
+
+    data = lastfm("tag.gettopartists", tag=tag, limit=10)
+    artists = data.get("topartists", {}).get("artist", [])
+
+    valid = len(artists) >= 10
+    tag_cache[tag] = valid
+
+    return valid
 
 # -------- CORE --------
 
@@ -122,7 +135,7 @@ def playlist(update,context):
         f"📀 Discovery playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
     )
 
-# -------- SCENE NUEVO --------
+# -------- SCENE (FILTRADO) --------
 
 def scene(update,context):
 
@@ -162,11 +175,19 @@ def scene(update,context):
 
     sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
 
-    top=[x[0] for x in sorted_items[:15]]
+    # 🔥 FILTRO INTELIGENTE
+    top=[]
+    for name,_ in sorted_items:
+        if is_valid_tag(name):
+            top.append(name)
+        if len(top)>=15:
+            break
 
-    buttons=[]
-    for s in top:
-        buttons.append([InlineKeyboardButton(s, callback_data=f"confirm|{s}")])
+    if not top:
+        update.message.reply_text("No usable genres found.")
+        return
+
+    buttons=[[InlineKeyboardButton(s, callback_data=f"confirm|{s}")] for s in top]
 
     update.message.reply_text(
         f"{BOT_VERSION}\n\n🧠 {artist_query}\n\nChoose a style:",
@@ -183,31 +204,26 @@ def handle_buttons(update,context):
 
     if action=="confirm":
 
-        style=value
-
         buttons=[
-            [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{style}")],
-            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")]
+            [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{value}")]
         ]
 
         query.edit_message_text(
-            f"🎧 {style}\n\nGenerate playlist?",
+            f"🎧 {value}\n\nGenerate playlist?",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
     elif action=="build":
 
-        style=value
+        query.edit_message_text(f"📀 Building {value} playlist…")
 
-        query.edit_message_text(f"📀 Building {style} playlist…")
-
-        data=lastfm("tag.gettopartists",tag=style,limit=50)
+        data=lastfm("tag.gettopartists",tag=value,limit=50)
         names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
         tracks=select_tracks(names)
 
         query.edit_message_text(
-            f"📀 {style} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+            f"📀 {value} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
         )
 
 # -------- OTROS --------
