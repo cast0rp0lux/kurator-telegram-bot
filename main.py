@@ -127,7 +127,7 @@ def playlist(update,context):
         f"📀 Discovery playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
     )
 
-# -------- SCENE (FIX REAL) --------
+# -------- SCENE (MEJORADO A+B) --------
 
 def scene(update,context):
 
@@ -163,10 +163,12 @@ def scene(update,context):
             style_count[s]=style_count.get(s,0)+1
 
     sorted_styles=sorted(style_count.items(),key=lambda x:x[1],reverse=True)
-    top_styles=[s[0] for s in sorted_styles[:6]]
+
+    # MÁS ESTILOS (A)
+    top_styles=[s[0] for s in sorted_styles[:12]]
 
     buttons=[]
-    for s in top_styles:
+    for s in top_styles[:10]:
         buttons.append([InlineKeyboardButton(s, callback_data=f"scene_style|{s}")])
 
     update.message.reply_text(
@@ -174,7 +176,7 @@ def scene(update,context):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# -------- CALLBACK (FIX REAL) --------
+# -------- CALLBACK (NAVEGACIÓN B) --------
 
 def handle_buttons(update,context):
     query=update.callback_query
@@ -202,6 +204,18 @@ def handle_buttons(update,context):
 
         releases=data.get("results",[])
 
+        # -------- NUEVOS ESTILOS (navegación)
+        style_count={}
+
+        for rel in releases:
+            for s in rel.get("style",[]):
+                if s.lower()!=style.lower():
+                    style_count[s]=style_count.get(s,0)+1
+
+        sorted_styles=sorted(style_count.items(),key=lambda x:x[1],reverse=True)
+        next_styles=[s[0] for s in sorted_styles[:8]]
+
+        # -------- ARTISTAS
         artists=set()
 
         for rel in releases:
@@ -209,7 +223,6 @@ def handle_buttons(update,context):
 
             if " - " in title:
                 artist=title.split(" - ")[0].strip()
-
                 if artist and len(artist)>2:
                     artists.add(artist)
 
@@ -217,8 +230,16 @@ def handle_buttons(update,context):
 
         tracks=select_tracks(artists)
 
+        # -------- BOTONES NUEVOS
+        buttons=[]
+        for s in next_styles:
+            buttons.append([InlineKeyboardButton(s, callback_data=f"scene_style|{s}")])
+
+        buttons.append([InlineKeyboardButton("🎧 Build playlist", callback_data=f"playlist|{style}")])
+
         query.edit_message_text(
-            f"📀 {style} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+            f"📀 {style} ({len(tracks)} tracks)\n\n" + "\n".join(tracks),
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
 
     elif action=="playlist":
