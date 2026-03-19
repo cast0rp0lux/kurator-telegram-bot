@@ -4,7 +4,7 @@ import random
 from collections import Counter, defaultdict
 from telegram.ext import Updater, CommandHandler
 
-BOT_VERSION = "Kurator | Music Discovery Engine (v2.0.3)"
+BOT_VERSION = "Kurator | Music Discovery Engine (v2.0.4)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -125,6 +125,7 @@ def start(update,context):
 DISCOVER
 
 /playlist — discovery playlist
+/playlist <genre> — genre playlist
 /dig — deep digging
 /trail <artist> — explore similar artists
 /scene <genre> — explore scene
@@ -136,7 +137,39 @@ DISCOVER
 def help_command(update, context):
     start(update,context)
 
-# -------- DIG (MEJORADO) --------
+# -------- PLAYLIST (MEJORADO) --------
+
+def playlist(update,context):
+    update.message.reply_text("Building discovery playlist…")
+
+    # 🔥 NUEVO: playlist por tag
+    if context.args:
+        tag=" ".join(context.args)
+
+        data=lastfm("tag.gettopartists",
+            tag=tag,
+            limit=50
+        )
+
+        artists=data.get("topartists",{}).get("artist",[])
+        names=[a["name"] for a in artists]
+
+        if not names:
+            update.message.reply_text("No results for this genre.")
+            return
+
+        tracks=select_tracks(names)
+        update.message.reply_text("\n".join(tracks))
+        return
+
+    # comportamiento original
+    seeds=extract_seed_artists()
+    graph=expand_artist_graph(seeds)
+    tracks=select_tracks(graph)
+
+    update.message.reply_text("\n".join(tracks))
+
+# -------- DIG --------
 
 def dig(update,context):
     update.message.reply_text("Digging deep…")
@@ -168,10 +201,7 @@ def dig(update,context):
         update.message.reply_text("Nothing found.")
         return
 
-    # 🔥 romper orden fijo
     random.shuffle(candidates)
-
-    # 🔥 coger ventana aleatoria
     window = candidates[:random.randint(40, 120)]
 
     results=[]
@@ -293,17 +323,6 @@ def rare(update,context):
 
     update.message.reply_text("\n".join(tracks))
 
-# -------- PLAYLIST --------
-
-def playlist(update,context):
-    update.message.reply_text("Building discovery playlist…")
-
-    seeds=extract_seed_artists()
-    graph=expand_artist_graph(seeds)
-    tracks=select_tracks(graph)
-
-    update.message.reply_text("\n".join(tracks))
-
 # -------- TELEGRAM --------
 
 updater=Updater(TELEGRAM_TOKEN)
@@ -317,7 +336,7 @@ dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
 dp.add_handler(CommandHandler("playlist",playlist))
 
-print("Kurator v2.0.3 running")
+print("Kurator v2.0.4 running")
 
 updater.start_polling()
 updater.idle()
