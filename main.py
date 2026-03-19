@@ -5,7 +5,7 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.2.3)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.2.4)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -18,7 +18,6 @@ SIMILAR_EXPANSION = 40
 PLAYLIST_SIZE = 30
 
 history = {"artists":set(),"tracks":set()}
-
 scene_memory = {}
 
 # -------- LASTFM --------
@@ -77,7 +76,7 @@ def select_tracks(artists):
 
     return tracks
 
-# -------- HOME (NUEVO) --------
+# -------- HOME --------
 
 def send_home(query):
     msg=f"""{BOT_VERSION}
@@ -143,7 +142,7 @@ def playlist(update,context):
         f"📀 Discovery playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
     )
 
-# -------- SCENE --------
+# -------- SCENE (FIX REAL) --------
 
 def scene(update,context):
 
@@ -152,7 +151,6 @@ def scene(update,context):
         return
 
     artist_query=" ".join(context.args)
-
     scene_memory[update.effective_chat.id] = artist_query
 
     update.message.reply_text("🧠 Mapping scene (Discogs)…")
@@ -177,11 +175,18 @@ def scene(update,context):
 
     counter={}
 
+    # 🔥 SOLO STYLE (clave)
     for rel in releases:
-        for s in rel.get("style",[]):
-            counter[s]=counter.get(s,0)+1
-        for g in rel.get("genre",[]):
-            counter[g]=counter.get(g,0)+1
+        styles = rel.get("style", [])
+
+        for s in styles:
+            counter[s] = counter.get(s, 0) + 1
+
+    # 🔥 fallback si no hay styles
+    if not counter:
+        for rel in releases:
+            for g in rel.get("genre", []):
+                counter[g] = counter.get(g, 0) + 1
 
     sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
     top=[x[0] for x in sorted_items[:15]]
@@ -250,7 +255,6 @@ def handle_buttons(update,context):
         scene(fake_update, context)
 
     elif action=="home":
-
         send_home(query)
 
 # -------- OTROS --------
