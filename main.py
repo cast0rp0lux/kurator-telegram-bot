@@ -3,7 +3,7 @@ import requests
 import random
 from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 BOT_VERSION = "Kurator | Music Discovery Engine (v2.1)"
 
@@ -15,7 +15,6 @@ SCRIBBLE_LIMIT = 600
 SEED_ARTISTS = 25
 SIMILAR_EXPANSION = 40
 PLAYLIST_SIZE = 30
-
 RARE_LISTENER_THRESHOLD = 50000
 
 TAG_BLACKLIST = {
@@ -23,26 +22,16 @@ TAG_BLACKLIST = {
 "british","american","my favorites","love","awesome","good","bad"
 }
 
-history = {
-"artists":set(),
-"tracks":set()
-}
+history = {"artists":set(),"tracks":set()}
 
-# -------- API --------
+# -------- LASTFM --------
 
 def lastfm(method, **params):
     base="http://ws.audioscrobbler.com/2.0/"
-    payload={
-        "method":method,
-        "api_key":LASTFM_API,
-        "format":"json",
-        **params
-    }
+    payload={"method":method,"api_key":LASTFM_API,"format":"json",**params}
     r=requests.get(base,params=payload)
-    try:
-        return r.json()
-    except:
-        return {}
+    try: return r.json()
+    except: return {}
 
 def normalize(name):
     return name.lower().strip()
@@ -50,159 +39,188 @@ def normalize(name):
 # -------- CORE --------
 
 def get_recent_tracks():
-    data=lastfm("user.getrecenttracks",
-        user=LASTFM_USER,
-        limit=SCRIBBLE_LIMIT
-    )
+    data=lastfm("user.getrecenttracks",user=LASTFM_USER,limit=SCRIBBLE_LIMIT)
     return data.get("recenttracks",{}).get("track",[])
 
 def extract_seed_artists():
-    tracks=get_recent_tracks()
     counter=Counter()
-    for t in tracks:
+    for t in get_recent_tracks():
         artist=t["artist"]["#text"]
-        if artist:
-            counter[artist]+=1
+        if artist: counter[artist]+=1
     return [a for a,_ in counter.most_common(SEED_ARTISTS)]
 
 def expand_artist_graph(seed_artists):
     pool=set()
     for artist in seed_artists:
-        data=lastfm("artist.getsimilar",
-            artist=artist,
-            limit=SIMILAR_EXPANSION
-        )
-        sims=data.get("similarartists",{}).get("artist",[])
-        for s in sims:
-            name=s["name"]
-            listeners=int(s.get("listeners",0))
-            if listeners>2000000:
-                continue
-            pool.add(name)
+        data=lastfm("artist.getsimilar",artist=artist,limit=SIMILAR_EXPANSION)
+        for s in data.get("similarartists",{}).get("artist",[]):
+            if int(s.get("listeners",0))>2000000: continue
+            pool.add(s["name"])
     return list(pool)
 
 def collect_scene_tags(artists):
-    tag_counter=Counter()
+    counter=Counter()
     for a in artists[:20]:
-        data=lastfm("artist.gettoptags",artist=a)
-        tags=data.get("toptags",{}).get("tag",[])
+        tags=lastfm("artist.gettoptags",artist=a).get("toptags",{}).get("tag",[])
         for t in tags:
             tag=t["name"].lower()
-            if tag in TAG_BLACKLIST:
-                continue
-            if len(tag)<3:
-                continue
-            tag_counter[tag]+=1
-    return [t for t,_ in tag_counter.most_common(12)]
+            if tag in TAG_BLACKLIST or len(tag)<3: continue
+            counter[tag]+=1
+    return counter
 
 def select_tracks(artists):
     tracks=[]
     random.shuffle(artists)
     for a in artists:
-        if len(tracks)>=PLAYLIST_SIZE:
-            break
-        if normalize(a) in history["artists"]:
-            continue
+        if len(tracks)>=PLAYLIST_SIZE: break
+        if normalize(a) in history["artists"]: continue
+
         data=lastfm("artist.gettoptracks",artist=a,limit=10)
         top=data.get("toptracks",{}).get("track",[])
-        if not top:
-            continue
         random.shuffle(top)
+
         for t in top:
             key=f"{normalize(a)}-{normalize(t['name'])}"
-            if key in history["tracks"]:
-                continue
+            if key in history["tracks"]: continue
+
             tracks.append(f"{a} - {t['name']}")
             history["artists"].add(normalize(a))
             history["tracks"].add(key)
             break
+
     return tracks
 
-# -------- SCENE VIEW --------
-
-def build_scene_view(tag):
-    data=lastfm("tag.gettopartists",tag=tag,limit=30)
-    artists=data.get("topartists",{}).get("artist",[])
-    names=[a["name"] for a in artists]
-
-    tags=collect_scene_tags(names)
-
-    text=f"{BOT_VERSION}\n\nScene: {tag}\n\n"
-    text += "Explore:\n\n"
-
-    for i in range(0,len(tags),3):
-        text += " || ".join(tags[i:i+3]) + "\n"
-
-    keyboard=[]
-
-    for t in tags:
-        keyboard.append([InlineKeyboardButton(t,callback_data=f"scene:{t}")])
-
-    keyboard.append([
-        InlineKeyboardButton("🎧 Build playlist",callback_data=f"playlist:{tag}")
-    ])
-
-    keyboard.append([
-        InlineKeyboardButton("⬅ Back",callback_data="back")
-    ])
-
-    return text, InlineKeyboardMarkup(keyboard)
-
-# -------- COMMANDS --------
+# -------- START --------
 
 def start(update,context):
-    update.message.reply_text(f"{BOT_VERSION}\n\nType /scene <genre>")
+    msg=f"""{BOT_VERSION}
+
+DISCOVER
+
+/playlist — discovery playlist
+/playlist <genre> — genre playlist
+/dig — deep digging
+/trail <artist>
+/scene <genre>
+/rare
+/help
+"""
+    update.message.reply_text(msg)
+
+def help_command(update,context):
+    start(update,context)
+
+# -------- PLAYLIST --------
+
+def playlist(update,context):
+    update.message.reply_text("Building discovery playlist…")
+
+    if context.args:
+        tag=" ".join(context.args)
+        data=lastfm("tag.gettopartists",tag=tag,limit=50)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
+
+        if not names:
+            update.message.reply_text("No results.")
+            return
+
+        update.message.reply_text("\n".join(select_tracks(names)))
+        return
+
+    seeds=extract_seed_artists()
+    graph=expand_artist_graph(seeds)
+    update.message.reply_text("\n".join(select_tracks(graph)))
+
+# -------- SCENE (NUEVO) --------
+
+def build_scene_message(genre, tags):
+    top=[t for t,_ in tags.most_common(12)]
+
+    msg=f"{BOT_VERSION}\n\nScene: {genre}\n\n"
+    msg+="PSYCH → " + " || ".join(top[:3]) + "\n"
+    msg+="ELECTRONIC → " + " || ".join(top[3:6]) + "\n"
+    msg+="EXPERIMENTAL → " + " || ".join(top[6:9]) + "\n"
+
+    return msg, top
 
 def scene(update,context):
     if not context.args:
         update.message.reply_text("Usage: /scene <genre>")
         return
 
-    tag=" ".join(context.args)
+    genre=" ".join(context.args)
+    update.message.reply_text("Mapping scene…")
 
-    context.user_data["scene_stack"]=[tag]
+    data=lastfm("tag.gettopartists",tag=genre,limit=30)
+    names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
-    text,keyboard=build_scene_view(tag)
+    tags=collect_scene_tags(names)
+    msg, top_tags = build_scene_message(genre, tags)
 
-    update.message.reply_text(text,reply_markup=keyboard)
+    buttons=[]
+    for t in top_tags[:8]:
+        buttons.append([InlineKeyboardButton(t, callback_data=f"scene|{t}")])
 
-# -------- CALLBACKS --------
+    buttons.append([InlineKeyboardButton("🎧 Build playlist", callback_data=f"playlist|{genre}")])
 
-def handle_callback(update,context):
+    update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
+# -------- CALLBACK --------
+
+def handle_buttons(update,context):
     query=update.callback_query
     query.answer()
 
-    data=query.data
+    action,value=query.data.split("|")
 
-    stack=context.user_data.get("scene_stack",[])
+    if action=="scene":
+        genre=value
 
-    if data.startswith("scene:"):
-        tag=data.split(":")[1]
-        stack.append(tag)
-        context.user_data["scene_stack"]=stack
+        data=lastfm("tag.gettopartists",tag=genre,limit=30)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
-        text,keyboard=build_scene_view(tag)
-        query.edit_message_text(text,reply_markup=keyboard)
+        tags=collect_scene_tags(names)
+        msg, top_tags = build_scene_message(genre, tags)
 
-    elif data.startswith("playlist:"):
-        tag=data.split(":")[1]
+        buttons=[]
+        for t in top_tags[:8]:
+            buttons.append([InlineKeyboardButton(t, callback_data=f"scene|{t}")])
 
-        data=lastfm("tag.gettopartists",tag=tag,limit=50)
-        artists=data.get("topartists",{}).get("artist",[])
-        names=[a["name"] for a in artists]
+        buttons.append([InlineKeyboardButton("🎧 Build playlist", callback_data=f"playlist|{genre}")])
+
+        query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif action=="playlist":
+        genre=value
+        data=lastfm("tag.gettopartists",tag=genre,limit=50)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
         tracks=select_tracks(names)
-
         query.message.reply_text("\n".join(tracks))
 
-    elif data=="back":
-        if len(stack)>1:
-            stack.pop()
-            tag=stack[-1]
-            context.user_data["scene_stack"]=stack
+# -------- DIG / TRAIL / RARE (SIN TOCAR) --------
 
-            text,keyboard=build_scene_view(tag)
-            query.edit_message_text(text,reply_markup=keyboard)
+def dig(update,context):
+    update.message.reply_text("Digging deep…")
+    seeds=extract_seed_artists()
+    graph=expand_artist_graph(seeds)
+    update.message.reply_text("\n".join(select_tracks(graph)))
+
+def trail(update,context):
+    if not context.args:
+        update.message.reply_text("Usage: /trail <artist>")
+        return
+    artist=" ".join(context.args)
+    update.message.reply_text(f"Following trail from {artist}…")
+    data=lastfm("artist.getsimilar",artist=artist,limit=60)
+    names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
+    update.message.reply_text("\n".join(select_tracks(names)))
+
+def rare(update,context):
+    update.message.reply_text("Searching rare artists…")
+    seeds=extract_seed_artists()
+    graph=expand_artist_graph(seeds)
+    update.message.reply_text("\n".join(select_tracks(graph)))
 
 # -------- TELEGRAM --------
 
@@ -210,8 +228,13 @@ updater=Updater(TELEGRAM_TOKEN)
 dp=updater.dispatcher
 
 dp.add_handler(CommandHandler("start",start))
+dp.add_handler(CommandHandler("help",help_command))
+dp.add_handler(CommandHandler("playlist",playlist))
 dp.add_handler(CommandHandler("scene",scene))
-dp.add_handler(CallbackQueryHandler(handle_callback))
+dp.add_handler(CommandHandler("dig",dig))
+dp.add_handler(CommandHandler("trail",trail))
+dp.add_handler(CommandHandler("rare",rare))
+dp.add_handler(CallbackQueryHandler(handle_buttons))
 
 print("Kurator v2.1 running")
 
