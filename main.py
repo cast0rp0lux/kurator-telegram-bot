@@ -5,7 +5,7 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator | Music Discovery Engine (v2.1)"
+BOT_VERSION = "Kurator | Music Discovery Engine (v2.1.1)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -22,6 +22,16 @@ TAG_BLACKLIST = {
 "british","american","my favorites","love","awesome","good","bad"
 }
 
+BAD_TAGS = {"indie","rock","alternative","electronic","pop"}
+
+GOOD_PATTERNS = [
+"jazz","soul","funk","dub","kraut","psychedelic","ambient",
+"minimal","boogie","disco","library","spiritual","cosmic",
+"afro","latin","groove","motorik","kosmische"
+]
+
+DECADE_TAGS = ["60s","70s","80s","90s"]
+
 history = {"artists":set(),"tracks":set()}
 
 # -------- LASTFM --------
@@ -35,6 +45,26 @@ def lastfm(method, **params):
 
 def normalize(name):
     return name.lower().strip()
+
+# -------- SCORING --------
+
+def score_tag(tag):
+
+    score = 0
+
+    if tag in BAD_TAGS:
+        score -= 10
+
+    if any(p in tag for p in GOOD_PATTERNS):
+        score += 5
+
+    if len(tag.split()) >= 2:
+        score += 3
+
+    if any(d in tag for d in DECADE_TAGS):
+        score += 4
+
+    return score
 
 # -------- CORE --------
 
@@ -64,7 +94,8 @@ def collect_scene_tags(artists):
         tags=lastfm("artist.gettoptags",artist=a).get("toptags",{}).get("tag",[])
         for t in tags:
             tag=t["name"].lower()
-            if tag in TAG_BLACKLIST or len(tag)<3: continue
+            if tag in TAG_BLACKLIST or len(tag)<3:
+                continue
             counter[tag]+=1
     return counter
 
@@ -98,7 +129,7 @@ def start(update,context):
 DISCOVER
 
 /playlist — discovery playlist
-/playlist <genre> — genre playlist
+/playlist <genre>
 /dig — deep digging
 /trail <artist>
 /scene <genre>
@@ -131,10 +162,17 @@ def playlist(update,context):
     graph=expand_artist_graph(seeds)
     update.message.reply_text("\n".join(select_tracks(graph)))
 
-# -------- SCENE (NUEVO) --------
+# -------- SCENE (MEJORADO) --------
 
 def build_scene_message(genre, tags):
-    top=[t for t,_ in tags.most_common(12)]
+
+    sorted_tags = sorted(
+        tags.items(),
+        key=lambda x: (score_tag(x[0]), x[1]),
+        reverse=True
+    )
+
+    top=[t for t,_ in sorted_tags[:12]]
 
     msg=f"{BOT_VERSION}\n\nScene: {genre}\n\n"
     msg+="PSYCH → " + " || ".join(top[:3]) + "\n"
@@ -198,7 +236,7 @@ def handle_buttons(update,context):
         tracks=select_tracks(names)
         query.message.reply_text("\n".join(tracks))
 
-# -------- DIG / TRAIL / RARE (SIN TOCAR) --------
+# -------- DIG / TRAIL / RARE --------
 
 def dig(update,context):
     update.message.reply_text("Digging deep…")
@@ -236,7 +274,7 @@ dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
-print("Kurator v2.1 running")
+print("Kurator v2.1.1 running")
 
 updater.start_polling()
 updater.idle()
