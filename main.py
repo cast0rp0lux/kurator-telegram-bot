@@ -5,7 +5,7 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.1.2)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.1.4)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -127,7 +127,7 @@ def playlist(update,context):
         f"📀 Discovery playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
     )
 
-# -------- SCENE (MEJORADO A+B) --------
+# -------- SCENE (NAVEGACIÓN PURA) --------
 
 def scene(update,context):
 
@@ -164,7 +164,6 @@ def scene(update,context):
 
     sorted_styles=sorted(style_count.items(),key=lambda x:x[1],reverse=True)
 
-    # MÁS ESTILOS (A)
     top_styles=[s[0] for s in sorted_styles[:12]]
 
     buttons=[]
@@ -176,7 +175,7 @@ def scene(update,context):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# -------- CALLBACK (NAVEGACIÓN B) --------
+# -------- CALLBACK (NAVEGACIÓN REAL) --------
 
 def handle_buttons(update,context):
     query=update.callback_query
@@ -188,7 +187,7 @@ def handle_buttons(update,context):
 
         style=value
 
-        query.edit_message_text(f"🔎 Exploring: {style}…")
+        query.edit_message_text(f"🧠 Exploring: {style}…")
 
         url="https://api.discogs.com/database/search"
 
@@ -204,7 +203,10 @@ def handle_buttons(update,context):
 
         releases=data.get("results",[])
 
-        # -------- NUEVOS ESTILOS (navegación)
+        if not releases:
+            query.edit_message_text("No results.")
+            return
+
         style_count={}
 
         for rel in releases:
@@ -212,33 +214,20 @@ def handle_buttons(update,context):
                 if s.lower()!=style.lower():
                     style_count[s]=style_count.get(s,0)+1
 
-        sorted_styles=sorted(style_count.items(),key=lambda x:x[1],reverse=True)
-        next_styles=[s[0] for s in sorted_styles[:8]]
+        sorted_styles=sorted(style_count.items(), key=lambda x:x[1], reverse=True)
 
-        # -------- ARTISTAS
-        artists=set()
+        next_styles=[s[0] for s in sorted_styles[:12]]
 
-        for rel in releases:
-            title=rel.get("title","")
+        if not next_styles:
+            query.edit_message_text("No further connections.")
+            return
 
-            if " - " in title:
-                artist=title.split(" - ")[0].strip()
-                if artist and len(artist)>2:
-                    artists.add(artist)
-
-        artists=list(artists)
-
-        tracks=select_tracks(artists)
-
-        # -------- BOTONES NUEVOS
         buttons=[]
-        for s in next_styles:
+        for s in next_styles[:10]:
             buttons.append([InlineKeyboardButton(s, callback_data=f"scene_style|{s}")])
 
-        buttons.append([InlineKeyboardButton("🎧 Build playlist", callback_data=f"playlist|{style}")])
-
         query.edit_message_text(
-            f"📀 {style} ({len(tracks)} tracks)\n\n" + "\n".join(tracks),
+            f"{BOT_VERSION}\n\n🧠 {style}\n\n→ Related styles:\n" + "\n".join(next_styles),
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
@@ -292,7 +281,7 @@ dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
-print("Kurator v2.1.2 running")
+print(BOT_VERSION)
 
 updater.start_polling()
 updater.idle()
