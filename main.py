@@ -5,7 +5,7 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator | Music Discovery Engine (v2.1.1)"
+BOT_VERSION = "Kurator | Music Discovery Engine (v2.1.2)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -162,7 +162,7 @@ def playlist(update,context):
     graph=expand_artist_graph(seeds)
     update.message.reply_text("\n".join(select_tracks(graph)))
 
-# -------- SCENE (MEJORADO) --------
+# -------- SCENE LIMPIO --------
 
 def build_scene_message(genre, tags):
 
@@ -175,9 +175,7 @@ def build_scene_message(genre, tags):
     top=[t for t,_ in sorted_tags[:12]]
 
     msg=f"{BOT_VERSION}\n\nScene: {genre}\n\n"
-    msg+="PSYCH → " + " || ".join(top[:3]) + "\n"
-    msg+="ELECTRONIC → " + " || ".join(top[3:6]) + "\n"
-    msg+="EXPERIMENTAL → " + " || ".join(top[6:9]) + "\n"
+    msg += "\n".join(top)
 
     return msg, top
 
@@ -274,7 +272,7 @@ dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
-print("Kurator v2.1.1 running")
+print("Kurator v2.1.2 running")
 
 updater.start_polling()
 updater.idle()
