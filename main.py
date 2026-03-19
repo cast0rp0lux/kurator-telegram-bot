@@ -5,12 +5,12 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator | Music Discovery Engine (v2.2.1)"
+BOT_VERSION = "Kurator | Music Discovery Engine (v2.1.2)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-DISCOGS_TOKEN = os.environ.get("DISCOGS_TOKEN")
+DISCOGS_TOKEN = os.environ["DISCOGS_TOKEN"]
 
 SCRIBBLE_LIMIT = 600
 SEED_ARTISTS = 25
@@ -24,6 +24,14 @@ TAG_BLACKLIST = {
 }
 
 BAD_TAGS = {"indie","rock","alternative","electronic","pop"}
+
+GOOD_PATTERNS = [
+"jazz","soul","funk","dub","kraut","psychedelic","ambient",
+"minimal","boogie","disco","library","spiritual","cosmic",
+"afro","latin","groove","motorik","kosmische"
+]
+
+DECADE_TAGS = ["60s","70s","80s","90s"]
 
 history = {"artists":set(),"tracks":set()}
 
@@ -39,93 +47,7 @@ def lastfm(method, **params):
 def normalize(name):
     return name.lower().strip()
 
-# -------- DISCOGS --------
-
-def discogs_headers():
-    return {"Authorization": f"Discogs token={DISCOGS_TOKEN}"}
-
-def discogs_search_artist(name):
-    url="https://api.discogs.com/database/search"
-    params={"q": name, "type": "artist", "per_page": 1}
-
-    try:
-        r=requests.get(url, headers=discogs_headers(), params=params, timeout=10)
-        data=r.json()
-        results=data.get("results",[])
-        if not results:
-            return None
-        return results[0].get("id")
-    except:
-        return None
-
-def discogs_get_releases(artist_id):
-    url=f"https://api.discogs.com/artists/{artist_id}/releases"
-
-    releases=[]
-    page=1
-
-    try:
-        while page <= 3:  # SIN CAP fuerte (más profundidad)
-            r=requests.get(
-                url,
-                headers=discogs_headers(),
-                params={"page":page,"per_page":100},
-                timeout=10
-            )
-            data=r.json()
-
-            releases.extend(data.get("releases",[]))
-
-            if page >= data.get("pagination",{}).get("pages",1):
-                break
-
-            page += 1
-
-        return releases
-
-    except:
-        return []
-
-def extract_styles_from_release(release):
-    styles = release.get("style", [])
-    year = release.get("year")
-
-    if not styles or not year:
-        return []
-
-    decade = f"{str(year)[:3]}0s"
-
-    tags=[]
-    for s in styles:
-        s=s.lower()
-
-        if s in BAD_TAGS or len(s)<3:
-            continue
-
-        tags.append(f"{s} ({decade})")
-
-    return tags
-
-def collect_scene_tags_discogs(artists):
-    counter = Counter()
-
-    for artist in artists[:12]:  # puedes subir luego si quieres
-        artist_id = discogs_search_artist(artist)
-
-        if not artist_id:
-            continue
-
-        releases = discogs_get_releases(artist_id)
-
-        for r in releases:
-            tags = extract_styles_from_release(r)
-
-            for t in tags:
-                counter[t] += 1
-
-    return counter
-
-# -------- CORE --------
+# -------- CORE (TODO IGUAL) --------
 
 def get_recent_tracks():
     data=lastfm("user.getrecenttracks",user=LASTFM_USER,limit=SCRIBBLE_LIMIT)
@@ -169,7 +91,108 @@ def select_tracks(artists):
 
     return tracks
 
-# -------- START --------
+# -------- NUEVO SCENE (DISCOGS) --------
+
+def scene(update,context):
+
+    if not context.args:
+        update.message.reply_text("Usage: /scene <artist>")
+        return
+
+    artist_query=" ".join(context.args)
+
+    update.message.reply_text("Mapping scene (Discogs)…")
+
+    url="https://api.discogs.com/database/search"
+
+    params={
+        "artist":artist_query,
+        "type":"release",
+        "per_page":50,
+        "token":DISCOGS_TOKEN
+    }
+
+    try:
+        r=requests.get(url,params=params,timeout=8)
+        data=r.json()
+    except:
+        update.message.reply_text("Discogs request failed.")
+        return
+
+    releases=data.get("results",[])
+
+    if not releases:
+        update.message.reply_text("No Discogs data found.")
+        return
+
+    # -------- styles --------
+    style_count={}
+    for r in releases:
+        for s in r.get("style",[]):
+            style_count[s]=style_count.get(s,0)+1
+
+    if not style_count:
+        update.message.reply_text("No styles found.")
+        return
+
+    sorted_styles=sorted(style_count.items(),key=lambda x:x[1],reverse=True)
+    top_styles=[s[0] for s in sorted_styles[:6]]
+
+    # -------- botones --------
+    buttons=[]
+    for s in top_styles[:6]:
+        buttons.append([InlineKeyboardButton(s, callback_data=f"scene_style|{s}")])
+
+    update.message.reply_text(
+        f"{BOT_VERSION}\n\nScene: {artist_query}\n\n" + "\n".join(top_styles),
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+# -------- CALLBACK MODIFICADO SOLO PARA SCENE --------
+
+def handle_buttons(update,context):
+    query=update.callback_query
+    query.answer()
+
+    action,value=query.data.split("|")
+
+    if action=="scene_style":
+
+        style=value
+
+        url="https://api.discogs.com/database/search"
+
+        params={
+            "style":style,
+            "type":"artist",
+            "per_page":40,
+            "token":DISCOGS_TOKEN
+        }
+
+        try:
+            r=requests.get(url,params=params,timeout=8)
+            data=r.json()
+        except:
+            query.edit_message_text("Discogs request failed.")
+            return
+
+        artists=[a["title"] for a in data.get("results",[])]
+
+        tracks=select_tracks(artists)
+
+        query.edit_message_text(
+            f"{BOT_VERSION}\n\nStyle: {style}\n\n" + "\n".join(tracks)
+        )
+
+    # TODO lo demás igual
+    elif action=="playlist":
+        genre=value
+        data=lastfm("tag.gettopartists",tag=genre,limit=50)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
+        tracks=select_tracks(names)
+        query.message.reply_text("\n".join(tracks))
+
+# -------- RESTO EXACTAMENTE IGUAL --------
 
 def start(update,context):
     msg=f"""{BOT_VERSION}
@@ -180,7 +203,7 @@ DISCOVER
 /playlist <genre>
 /dig — deep digging
 /trail <artist>
-/scene <genre>
+/scene <artist>
 /rare
 /help
 """
@@ -189,105 +212,17 @@ DISCOVER
 def help_command(update,context):
     start(update,context)
 
-# -------- PLAYLIST --------
-
 def playlist(update,context):
     update.message.reply_text("Building discovery playlist…")
-
     if context.args:
         tag=" ".join(context.args)
         data=lastfm("tag.gettopartists",tag=tag,limit=50)
         names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
-
-        if not names:
-            update.message.reply_text("No results.")
-            return
-
         update.message.reply_text("\n".join(select_tracks(names)))
         return
-
     seeds=extract_seed_artists()
     graph=expand_artist_graph(seeds)
     update.message.reply_text("\n".join(select_tracks(graph)))
-
-# -------- SCENE (DISCOGS REAL) --------
-
-def build_scene_message(genre, tags):
-    sorted_tags = sorted(tags.items(), key=lambda x: x[1], reverse=True)
-
-    top=[t for t,_ in sorted_tags[:12]]
-
-    msg=f"{BOT_VERSION}\n\nScene: {genre}\n\n"
-    msg += "\n".join(top)
-
-    return msg, top
-
-def scene(update,context):
-    if not context.args:
-        update.message.reply_text("Usage: /scene <genre>")
-        return
-
-    genre=" ".join(context.args)
-    update.message.reply_text("Mapping scene (Discogs deep)…")
-
-    data=lastfm("tag.gettopartists",tag=genre,limit=30)
-    names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
-
-    tags=collect_scene_tags_discogs(names)
-
-    if not tags:
-        update.message.reply_text("No Discogs data found.")
-        return
-
-    msg, top_tags = build_scene_message(genre, tags)
-
-    buttons=[]
-    for t in top_tags[:8]:
-        buttons.append([InlineKeyboardButton(t, callback_data=f"scene|{t}")])
-
-    buttons.append([InlineKeyboardButton("🎧 Build playlist", callback_data=f"playlist|{genre}")])
-
-    update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
-
-# -------- CALLBACK --------
-
-def handle_buttons(update,context):
-    query=update.callback_query
-    query.answer()
-
-    action,value=query.data.split("|")
-
-    if action=="scene":
-        genre=value
-
-        data=lastfm("tag.gettopartists",tag=genre,limit=30)
-        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
-
-        tags=collect_scene_tags_discogs(names)
-
-        if not tags:
-            query.edit_message_text("No Discogs data found.")
-            return
-
-        msg, top_tags = build_scene_message(genre, tags)
-
-        buttons=[]
-        for t in top_tags[:8]:
-            buttons.append([InlineKeyboardButton(t, callback_data=f"scene|{t}")])
-
-        buttons.append([InlineKeyboardButton("🎧 Build playlist", callback_data=f"playlist|{genre}")])
-
-        query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
-
-    elif action=="playlist":
-        genre=value
-        data=lastfm("tag.gettopartists",tag=genre,limit=50)
-        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
-
-        tracks=select_tracks(names)
-        query.message.reply_text("\n".join(tracks))
-
-# -------- DIG / TRAIL / RARE --------
 
 def dig(update,context):
     update.message.reply_text("Digging deep…")
@@ -300,7 +235,6 @@ def trail(update,context):
         update.message.reply_text("Usage: /trail <artist>")
         return
     artist=" ".join(context.args)
-    update.message.reply_text(f"Following trail from {artist}…")
     data=lastfm("artist.getsimilar",artist=artist,limit=60)
     names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
     update.message.reply_text("\n".join(select_tracks(names)))
@@ -310,8 +244,6 @@ def rare(update,context):
     seeds=extract_seed_artists()
     graph=expand_artist_graph(seeds)
     update.message.reply_text("\n".join(select_tracks(graph)))
-
-# -------- TELEGRAM --------
 
 updater=Updater(TELEGRAM_TOKEN)
 dp=updater.dispatcher
@@ -325,7 +257,7 @@ dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
-print("Kurator v2.2.1 running")
+print("Kurator v2.1.2 running")
 
 updater.start_polling()
 updater.idle()
