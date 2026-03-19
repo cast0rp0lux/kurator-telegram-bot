@@ -5,7 +5,7 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator | Music Discovery Engine (v2.2)"
+BOT_VERSION = "Kurator | Music Discovery Engine (v2.2.1)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -25,14 +25,6 @@ TAG_BLACKLIST = {
 
 BAD_TAGS = {"indie","rock","alternative","electronic","pop"}
 
-GOOD_PATTERNS = [
-"jazz","soul","funk","dub","kraut","psychedelic","ambient",
-"minimal","boogie","disco","library","spiritual","cosmic",
-"afro","latin","groove","motorik","kosmische"
-]
-
-DECADE_TAGS = ["60s","70s","80s","90s"]
-
 history = {"artists":set(),"tracks":set()}
 
 # -------- LASTFM --------
@@ -49,58 +41,89 @@ def normalize(name):
 
 # -------- DISCOGS --------
 
-def discogs_search(artist):
-    if not DISCOGS_TOKEN:
-        return None
+def discogs_headers():
+    return {"Authorization": f"Discogs token={DISCOGS_TOKEN}"}
 
+def discogs_search_artist(name):
     url="https://api.discogs.com/database/search"
-    headers={"Authorization": f"Discogs token={DISCOGS_TOKEN}"}
-
-    params={"q": artist, "type": "artist", "per_page": 1}
+    params={"q": name, "type": "artist", "per_page": 1}
 
     try:
-        r=requests.get(url,headers=headers,params=params,timeout=5)
+        r=requests.get(url, headers=discogs_headers(), params=params, timeout=10)
         data=r.json()
-
         results=data.get("results",[])
         if not results:
             return None
-
-        res=results[0]
-
-        year=res.get("year")
-        genre=res.get("genre", [])
-        style=res.get("style", [])
-
-        decade=None
-        if year:
-            decade=f"{str(year)[:3]}0s"
-
-        tags = style if style else genre
-
-        return {"decade":decade,"tags":tags}
-
+        return results[0].get("id")
     except:
         return None
 
-# -------- SCORING --------
+def discogs_get_releases(artist_id):
+    url=f"https://api.discogs.com/artists/{artist_id}/releases"
 
-def score_tag(tag):
-    score = 0
+    releases=[]
+    page=1
 
-    if tag in BAD_TAGS:
-        score -= 10
+    try:
+        while page <= 3:  # SIN CAP fuerte (más profundidad)
+            r=requests.get(
+                url,
+                headers=discogs_headers(),
+                params={"page":page,"per_page":100},
+                timeout=10
+            )
+            data=r.json()
 
-    if any(p in tag for p in GOOD_PATTERNS):
-        score += 5
+            releases.extend(data.get("releases",[]))
 
-    if len(tag.split()) >= 2:
-        score += 3
+            if page >= data.get("pagination",{}).get("pages",1):
+                break
 
-    if any(d in tag for d in DECADE_TAGS):
-        score += 4
+            page += 1
 
-    return score
+        return releases
+
+    except:
+        return []
+
+def extract_styles_from_release(release):
+    styles = release.get("style", [])
+    year = release.get("year")
+
+    if not styles or not year:
+        return []
+
+    decade = f"{str(year)[:3]}0s"
+
+    tags=[]
+    for s in styles:
+        s=s.lower()
+
+        if s in BAD_TAGS or len(s)<3:
+            continue
+
+        tags.append(f"{s} ({decade})")
+
+    return tags
+
+def collect_scene_tags_discogs(artists):
+    counter = Counter()
+
+    for artist in artists[:12]:  # puedes subir luego si quieres
+        artist_id = discogs_search_artist(artist)
+
+        if not artist_id:
+            continue
+
+        releases = discogs_get_releases(artist_id)
+
+        for r in releases:
+            tags = extract_styles_from_release(r)
+
+            for t in tags:
+                counter[t] += 1
+
+    return counter
 
 # -------- CORE --------
 
@@ -123,38 +146,6 @@ def expand_artist_graph(seed_artists):
             if int(s.get("listeners",0))>2000000: continue
             pool.add(s["name"])
     return list(pool)
-
-# -------- SCENE ENRICH --------
-
-def collect_scene_tags_enriched(artists):
-    counter=Counter()
-
-    for a in artists[:12]:  # limitamos llamadas
-        info=discogs_search(a)
-
-        if not info:
-            continue
-
-        tags=info.get("tags",[])
-        decade=info.get("decade")
-
-        for t in tags:
-            tag=t.lower()
-
-            if tag in TAG_BLACKLIST or len(tag)<3:
-                continue
-
-            if tag in BAD_TAGS:
-                continue
-
-            if decade:
-                tag=f"{tag} ({decade})"
-
-            counter[tag]+=2  # peso alto Discogs
-
-    return counter
-
-# -------- SELECT TRACKS --------
 
 def select_tracks(artists):
     tracks=[]
@@ -219,14 +210,10 @@ def playlist(update,context):
     graph=expand_artist_graph(seeds)
     update.message.reply_text("\n".join(select_tracks(graph)))
 
-# -------- SCENE --------
+# -------- SCENE (DISCOGS REAL) --------
 
 def build_scene_message(genre, tags):
-    sorted_tags = sorted(
-        tags.items(),
-        key=lambda x: (score_tag(x[0]), x[1]),
-        reverse=True
-    )
+    sorted_tags = sorted(tags.items(), key=lambda x: x[1], reverse=True)
 
     top=[t for t,_ in sorted_tags[:12]]
 
@@ -241,12 +228,16 @@ def scene(update,context):
         return
 
     genre=" ".join(context.args)
-    update.message.reply_text("Mapping scene…")
+    update.message.reply_text("Mapping scene (Discogs deep)…")
 
     data=lastfm("tag.gettopartists",tag=genre,limit=30)
     names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
-    tags=collect_scene_tags_enriched(names)
+    tags=collect_scene_tags_discogs(names)
+
+    if not tags:
+        update.message.reply_text("No Discogs data found.")
+        return
 
     msg, top_tags = build_scene_message(genre, tags)
 
@@ -272,7 +263,11 @@ def handle_buttons(update,context):
         data=lastfm("tag.gettopartists",tag=genre,limit=30)
         names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
-        tags=collect_scene_tags_enriched(names)
+        tags=collect_scene_tags_discogs(names)
+
+        if not tags:
+            query.edit_message_text("No Discogs data found.")
+            return
 
         msg, top_tags = build_scene_message(genre, tags)
 
@@ -330,7 +325,7 @@ dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
-print("Kurator v2.2 running")
+print("Kurator v2.2.1 running")
 
 updater.start_polling()
 updater.idle()
