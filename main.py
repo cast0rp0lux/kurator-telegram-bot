@@ -127,7 +127,7 @@ def playlist(update,context):
         f"📀 Discovery playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
     )
 
-# -------- SCENE --------
+# -------- SCENE (FIX REAL) --------
 
 def scene(update,context):
 
@@ -148,12 +148,8 @@ def scene(update,context):
         "token":DISCOGS_TOKEN
     }
 
-    try:
-        r=requests.get(url,params=params,timeout=8)
-        data=r.json()
-    except:
-        update.message.reply_text("Discogs request failed.")
-        return
+    r=requests.get(url,params=params)
+    data=r.json()
 
     releases=data.get("results",[])
 
@@ -165,10 +161,6 @@ def scene(update,context):
     for r in releases:
         for s in r.get("style",[]):
             style_count[s]=style_count.get(s,0)+1
-
-    if not style_count:
-        update.message.reply_text("No styles found.")
-        return
 
     sorted_styles=sorted(style_count.items(),key=lambda x:x[1],reverse=True)
     top_styles=[s[0] for s in sorted_styles[:6]]
@@ -182,7 +174,7 @@ def scene(update,context):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# -------- CALLBACK --------
+# -------- CALLBACK (FIX REAL) --------
 
 def handle_buttons(update,context):
     query=update.callback_query
@@ -200,19 +192,28 @@ def handle_buttons(update,context):
 
         params={
             "style":style,
-            "type":"artist",
-            "per_page":40,
+            "type":"release",
+            "per_page":50,
             "token":DISCOGS_TOKEN
         }
 
-        try:
-            r=requests.get(url,params=params,timeout=8)
-            data=r.json()
-        except:
-            query.edit_message_text("Discogs request failed.")
-            return
+        r=requests.get(url,params=params)
+        data=r.json()
 
-        artists=[a["title"] for a in data.get("results",[])]
+        releases=data.get("results",[])
+
+        artists=set()
+
+        for rel in releases:
+            title=rel.get("title","")
+
+            if " - " in title:
+                artist=title.split(" - ")[0].strip()
+
+                if artist and len(artist)>2:
+                    artists.add(artist)
+
+        artists=list(artists)
 
         tracks=select_tracks(artists)
 
