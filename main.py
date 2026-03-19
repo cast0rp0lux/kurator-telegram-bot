@@ -5,11 +5,12 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator | Music Discovery Engine (v2.1.2)"
+BOT_VERSION = "Kurator | Music Discovery Engine (v2.2)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+DISCOGS_TOKEN = os.environ.get("DISCOGS_TOKEN")
 
 SCRIBBLE_LIMIT = 600
 SEED_ARTISTS = 25
@@ -46,10 +47,45 @@ def lastfm(method, **params):
 def normalize(name):
     return name.lower().strip()
 
+# -------- DISCOGS --------
+
+def discogs_search(artist):
+    if not DISCOGS_TOKEN:
+        return None
+
+    url="https://api.discogs.com/database/search"
+    headers={"Authorization": f"Discogs token={DISCOGS_TOKEN}"}
+
+    params={"q": artist, "type": "artist", "per_page": 1}
+
+    try:
+        r=requests.get(url,headers=headers,params=params,timeout=5)
+        data=r.json()
+
+        results=data.get("results",[])
+        if not results:
+            return None
+
+        res=results[0]
+
+        year=res.get("year")
+        genre=res.get("genre", [])
+        style=res.get("style", [])
+
+        decade=None
+        if year:
+            decade=f"{str(year)[:3]}0s"
+
+        tags = style if style else genre
+
+        return {"decade":decade,"tags":tags}
+
+    except:
+        return None
+
 # -------- SCORING --------
 
 def score_tag(tag):
-
     score = 0
 
     if tag in BAD_TAGS:
@@ -88,16 +124,37 @@ def expand_artist_graph(seed_artists):
             pool.add(s["name"])
     return list(pool)
 
-def collect_scene_tags(artists):
+# -------- SCENE ENRICH --------
+
+def collect_scene_tags_enriched(artists):
     counter=Counter()
-    for a in artists[:20]:
-        tags=lastfm("artist.gettoptags",artist=a).get("toptags",{}).get("tag",[])
+
+    for a in artists[:12]:  # limitamos llamadas
+        info=discogs_search(a)
+
+        if not info:
+            continue
+
+        tags=info.get("tags",[])
+        decade=info.get("decade")
+
         for t in tags:
-            tag=t["name"].lower()
+            tag=t.lower()
+
             if tag in TAG_BLACKLIST or len(tag)<3:
                 continue
-            counter[tag]+=1
+
+            if tag in BAD_TAGS:
+                continue
+
+            if decade:
+                tag=f"{tag} ({decade})"
+
+            counter[tag]+=2  # peso alto Discogs
+
     return counter
+
+# -------- SELECT TRACKS --------
 
 def select_tracks(artists):
     tracks=[]
@@ -162,10 +219,9 @@ def playlist(update,context):
     graph=expand_artist_graph(seeds)
     update.message.reply_text("\n".join(select_tracks(graph)))
 
-# -------- SCENE LIMPIO --------
+# -------- SCENE --------
 
 def build_scene_message(genre, tags):
-
     sorted_tags = sorted(
         tags.items(),
         key=lambda x: (score_tag(x[0]), x[1]),
@@ -190,7 +246,8 @@ def scene(update,context):
     data=lastfm("tag.gettopartists",tag=genre,limit=30)
     names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
-    tags=collect_scene_tags(names)
+    tags=collect_scene_tags_enriched(names)
+
     msg, top_tags = build_scene_message(genre, tags)
 
     buttons=[]
@@ -215,7 +272,8 @@ def handle_buttons(update,context):
         data=lastfm("tag.gettopartists",tag=genre,limit=30)
         names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
-        tags=collect_scene_tags(names)
+        tags=collect_scene_tags_enriched(names)
+
         msg, top_tags = build_scene_message(genre, tags)
 
         buttons=[]
@@ -272,7 +330,7 @@ dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
-print("Kurator v2.1.2 running")
+print("Kurator v2.2 running")
 
 updater.start_polling()
 updater.idle()
