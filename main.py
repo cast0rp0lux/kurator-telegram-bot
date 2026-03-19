@@ -5,7 +5,7 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.1.4)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.1.5)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -16,7 +16,6 @@ SCRIBBLE_LIMIT = 600
 SEED_ARTISTS = 25
 SIMILAR_EXPANSION = 40
 PLAYLIST_SIZE = 30
-RARE_LISTENER_THRESHOLD = 50000
 
 history = {"artists":set(),"tracks":set()}
 
@@ -108,10 +107,6 @@ def playlist(update,context):
         data=lastfm("tag.gettopartists",tag=tag,limit=50)
         names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
-        if not names:
-            update.message.reply_text("No results.")
-            return
-
         tracks=select_tracks(names)
 
         update.message.reply_text(
@@ -127,7 +122,18 @@ def playlist(update,context):
         f"📀 Discovery playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
     )
 
-# -------- SCENE (NAVEGACIÓN PURA) --------
+# -------- SCENE FIX --------
+
+def extract_styles_and_genres(releases):
+    counter={}
+
+    for r in releases:
+        for s in r.get("style",[]):
+            counter[s]=counter.get(s,0)+1
+        for g in r.get("genre",[]):
+            counter[g]=counter.get(g,0)+1
+
+    return counter
 
 def scene(update,context):
 
@@ -157,25 +163,23 @@ def scene(update,context):
         update.message.reply_text("No Discogs data found.")
         return
 
-    style_count={}
-    for r in releases:
-        for s in r.get("style",[]):
-            style_count[s]=style_count.get(s,0)+1
+    counter=extract_styles_and_genres(releases)
 
-    sorted_styles=sorted(style_count.items(),key=lambda x:x[1],reverse=True)
+    if not counter:
+        update.message.reply_text("No styles found.")
+        return
 
-    top_styles=[s[0] for s in sorted_styles[:12]]
+    sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
+    top=[x[0] for x in sorted_items[:12]]
 
-    buttons=[]
-    for s in top_styles[:10]:
-        buttons.append([InlineKeyboardButton(s, callback_data=f"scene_style|{s}")])
+    buttons=[[InlineKeyboardButton(s, callback_data=f"scene_style|{s}")] for s in top[:10]]
 
     update.message.reply_text(
-        f"{BOT_VERSION}\n\n🧠 Scene: {artist_query}\n\n" + "\n".join(top_styles),
+        f"{BOT_VERSION}\n\n🧠 Scene: {artist_query}\n\n" + "\n".join(top),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# -------- CALLBACK (NAVEGACIÓN REAL) --------
+# -------- CALLBACK --------
 
 def handle_buttons(update,context):
     query=update.callback_query
@@ -207,37 +211,20 @@ def handle_buttons(update,context):
             query.edit_message_text("No results.")
             return
 
-        style_count={}
+        counter=extract_styles_and_genres(releases)
 
-        for rel in releases:
-            for s in rel.get("style",[]):
-                if s.lower()!=style.lower():
-                    style_count[s]=style_count.get(s,0)+1
-
-        sorted_styles=sorted(style_count.items(), key=lambda x:x[1], reverse=True)
-
-        next_styles=[s[0] for s in sorted_styles[:12]]
-
-        if not next_styles:
+        if not counter:
             query.edit_message_text("No further connections.")
             return
 
-        buttons=[]
-        for s in next_styles[:10]:
-            buttons.append([InlineKeyboardButton(s, callback_data=f"scene_style|{s}")])
+        sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
+        next_items=[x[0] for x in sorted_items[:12]]
+
+        buttons=[[InlineKeyboardButton(s, callback_data=f"scene_style|{s}")] for s in next_items[:10]]
 
         query.edit_message_text(
-            f"{BOT_VERSION}\n\n🧠 {style}\n\n→ Related styles:\n" + "\n".join(next_styles),
+            f"{BOT_VERSION}\n\n🧠 {style}\n\n→ Related:\n" + "\n".join(next_items),
             reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-    elif action=="playlist":
-        genre=value
-        data=lastfm("tag.gettopartists",tag=genre,limit=50)
-        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
-        tracks=select_tracks(names)
-        query.message.reply_text(
-            f"📀 Playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
         )
 
 # -------- OTROS --------
@@ -250,18 +237,13 @@ def dig(update,context):
     update.message.reply_text("\n".join(tracks))
 
 def trail(update,context):
-    if not context.args:
-        update.message.reply_text("Usage: /trail <artist>")
-        return
     artist=" ".join(context.args)
-    update.message.reply_text(f"🔗 Following trail: {artist}…")
     data=lastfm("artist.getsimilar",artist=artist,limit=60)
     names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
     tracks=select_tracks(names)
     update.message.reply_text("\n".join(tracks))
 
 def rare(update,context):
-    update.message.reply_text("🧪 Searching rare stuff…")
     seeds=extract_seed_artists()
     graph=expand_artist_graph(seeds)
     tracks=select_tracks(graph)
