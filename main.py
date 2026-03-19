@@ -18,7 +18,9 @@ SIMILAR_EXPANSION = 40
 PLAYLIST_SIZE = 30
 
 history = {"artists":set(),"tracks":set()}
-tag_cache = {}
+
+# 🔥 NUEVO: memoria simple para scene
+scene_memory = {}
 
 # -------- LASTFM --------
 
@@ -31,18 +33,6 @@ def lastfm(method, **params):
 
 def normalize(name):
     return name.lower().strip()
-
-def is_valid_tag(tag):
-    if tag in tag_cache:
-        return tag_cache[tag]
-
-    data = lastfm("tag.gettopartists", tag=tag, limit=10)
-    artists = data.get("topartists", {}).get("artist", [])
-
-    valid = len(artists) >= 10
-    tag_cache[tag] = valid
-
-    return valid
 
 # -------- CORE --------
 
@@ -135,7 +125,7 @@ def playlist(update,context):
         f"📀 Discovery playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
     )
 
-# -------- SCENE (FILTRADO) --------
+# -------- SCENE --------
 
 def scene(update,context):
 
@@ -144,6 +134,9 @@ def scene(update,context):
         return
 
     artist_query=" ".join(context.args)
+
+    # 🔥 guardar en memoria
+    scene_memory[update.effective_chat.id] = artist_query
 
     update.message.reply_text("🧠 Mapping scene (Discogs)…")
 
@@ -174,20 +167,11 @@ def scene(update,context):
             counter[g]=counter.get(g,0)+1
 
     sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
+    top=[x[0] for x in sorted_items[:15]]
 
-    # 🔥 FILTRO INTELIGENTE
-    top=[]
-    for name,_ in sorted_items:
-        if is_valid_tag(name):
-            top.append(name)
-        if len(top)>=15:
-            break
-
-    if not top:
-        update.message.reply_text("No usable genres found.")
-        return
-
-    buttons=[[InlineKeyboardButton(s, callback_data=f"confirm|{s}")] for s in top]
+    buttons=[]
+    for s in top:
+        buttons.append([InlineKeyboardButton(s, callback_data=f"confirm|{s}")])
 
     update.message.reply_text(
         f"{BOT_VERSION}\n\n🧠 {artist_query}\n\nChoose a style:",
@@ -204,27 +188,50 @@ def handle_buttons(update,context):
 
     if action=="confirm":
 
+        style=value
+
         buttons=[
-            [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{value}")]
+            [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{style}")],
+            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")]
         ]
 
         query.edit_message_text(
-            f"🎧 {value}\n\nGenerate playlist?",
+            f"🎧 {style}\n\nGenerate playlist?",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
     elif action=="build":
 
-        query.edit_message_text(f"📀 Building {value} playlist…")
+        style=value
 
-        data=lastfm("tag.gettopartists",tag=value,limit=50)
+        query.edit_message_text(f"📀 Building {style} playlist…")
+
+        data=lastfm("tag.gettopartists",tag=style,limit=50)
         names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
 
         tracks=select_tracks(names)
 
         query.edit_message_text(
-            f"📀 {value} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+            f"📀 {style} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
         )
+
+    # 🔥 BACK REAL
+    elif action=="back":
+
+        artist_query = scene_memory.get(query.message.chat.id)
+
+        if not artist_query:
+            query.edit_message_text("No previous scene.")
+            return
+
+        # reutilizamos scene logic
+        fake_update = type('', (), {})()
+        fake_update.message = query.message
+        fake_update.effective_chat = query.message.chat
+
+        context.args = [artist_query]
+
+        scene(fake_update, context)
 
 # -------- OTROS --------
 
