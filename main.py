@@ -5,7 +5,7 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.2.1)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.2.3)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -19,7 +19,6 @@ PLAYLIST_SIZE = 30
 
 history = {"artists":set(),"tracks":set()}
 
-# 🔥 NUEVO: memoria simple para scene
 scene_memory = {}
 
 # -------- LASTFM --------
@@ -78,6 +77,25 @@ def select_tracks(artists):
 
     return tracks
 
+# -------- HOME (NUEVO) --------
+
+def send_home(query):
+    msg=f"""{BOT_VERSION}
+
+DISCOVER
+
+📀 /playlist — discovery playlist
+📀 /playlist <genre>
+
+🕳️ /dig — deep digging
+🔗 /trail <artist>
+🧠 /scene <artist>
+
+🧪 /rare
+/help
+"""
+    query.edit_message_text(msg)
+
 # -------- START --------
 
 def start(update,context):
@@ -135,7 +153,6 @@ def scene(update,context):
 
     artist_query=" ".join(context.args)
 
-    # 🔥 guardar en memoria
     scene_memory[update.effective_chat.id] = artist_query
 
     update.message.reply_text("🧠 Mapping scene (Discogs)…")
@@ -192,7 +209,8 @@ def handle_buttons(update,context):
 
         buttons=[
             [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{style}")],
-            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")]
+            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")],
+            [InlineKeyboardButton("🏠 Home", callback_data="home")]
         ]
 
         query.edit_message_text(
@@ -215,7 +233,6 @@ def handle_buttons(update,context):
             f"📀 {style} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
         )
 
-    # 🔥 BACK REAL
     elif action=="back":
 
         artist_query = scene_memory.get(query.message.chat.id)
@@ -224,7 +241,6 @@ def handle_buttons(update,context):
             query.edit_message_text("No previous scene.")
             return
 
-        # reutilizamos scene logic
         fake_update = type('', (), {})()
         fake_update.message = query.message
         fake_update.effective_chat = query.message.chat
@@ -232,6 +248,10 @@ def handle_buttons(update,context):
         context.args = [artist_query]
 
         scene(fake_update, context)
+
+    elif action=="home":
+
+        send_home(query)
 
 # -------- OTROS --------
 
