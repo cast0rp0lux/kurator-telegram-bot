@@ -5,7 +5,7 @@ from collections import Counter
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.1.5)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.2.0)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -122,18 +122,7 @@ def playlist(update,context):
         f"📀 Discovery playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
     )
 
-# -------- SCENE FIX --------
-
-def extract_styles_and_genres(releases):
-    counter={}
-
-    for r in releases:
-        for s in r.get("style",[]):
-            counter[s]=counter.get(s,0)+1
-        for g in r.get("genre",[]):
-            counter[g]=counter.get(g,0)+1
-
-    return counter
+# -------- SCENE NUEVO --------
 
 def scene(update,context):
 
@@ -150,7 +139,7 @@ def scene(update,context):
     params={
         "artist":artist_query,
         "type":"release",
-        "per_page":50,
+        "per_page":100,
         "token":DISCOGS_TOKEN
     }
 
@@ -163,19 +152,24 @@ def scene(update,context):
         update.message.reply_text("No Discogs data found.")
         return
 
-    counter=extract_styles_and_genres(releases)
+    counter={}
 
-    if not counter:
-        update.message.reply_text("No styles found.")
-        return
+    for rel in releases:
+        for s in rel.get("style",[]):
+            counter[s]=counter.get(s,0)+1
+        for g in rel.get("genre",[]):
+            counter[g]=counter.get(g,0)+1
 
     sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
-    top=[x[0] for x in sorted_items[:12]]
 
-    buttons=[[InlineKeyboardButton(s, callback_data=f"scene_style|{s}")] for s in top[:10]]
+    top=[x[0] for x in sorted_items[:15]]
+
+    buttons=[]
+    for s in top:
+        buttons.append([InlineKeyboardButton(s, callback_data=f"confirm|{s}")])
 
     update.message.reply_text(
-        f"{BOT_VERSION}\n\n🧠 Scene: {artist_query}\n\n" + "\n".join(top),
+        f"{BOT_VERSION}\n\n🧠 {artist_query}\n\nChoose a style:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -187,44 +181,33 @@ def handle_buttons(update,context):
 
     action,value=query.data.split("|")
 
-    if action=="scene_style":
+    if action=="confirm":
 
         style=value
 
-        query.edit_message_text(f"🧠 Exploring: {style}…")
-
-        url="https://api.discogs.com/database/search"
-
-        params={
-            "style":style,
-            "type":"release",
-            "per_page":50,
-            "token":DISCOGS_TOKEN
-        }
-
-        r=requests.get(url,params=params)
-        data=r.json()
-
-        releases=data.get("results",[])
-
-        if not releases:
-            query.edit_message_text("No results.")
-            return
-
-        counter=extract_styles_and_genres(releases)
-
-        if not counter:
-            query.edit_message_text("No further connections.")
-            return
-
-        sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
-        next_items=[x[0] for x in sorted_items[:12]]
-
-        buttons=[[InlineKeyboardButton(s, callback_data=f"scene_style|{s}")] for s in next_items[:10]]
+        buttons=[
+            [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{style}")],
+            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")]
+        ]
 
         query.edit_message_text(
-            f"{BOT_VERSION}\n\n🧠 {style}\n\n→ Related:\n" + "\n".join(next_items),
+            f"🎧 {style}\n\nGenerate playlist?",
             reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif action=="build":
+
+        style=value
+
+        query.edit_message_text(f"📀 Building {style} playlist…")
+
+        data=lastfm("tag.gettopartists",tag=style,limit=50)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
+
+        tracks=select_tracks(names)
+
+        query.edit_message_text(
+            f"📀 {style} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
         )
 
 # -------- OTROS --------
