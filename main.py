@@ -2,10 +2,11 @@ import os
 import requests
 import random
 from collections import Counter
+from urllib.parse import quote
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.2.4)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.3)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -19,6 +20,11 @@ PLAYLIST_SIZE = 30
 
 history = {"artists":set(),"tracks":set()}
 scene_memory = {}
+
+# -------- SPOTIFY --------
+
+def spotify_search_url(track):
+    return f"https://open.spotify.com/search/{quote(track)}"
 
 # -------- LASTFM --------
 
@@ -85,11 +91,9 @@ DISCOVER
 
 📀 /playlist — discovery playlist
 📀 /playlist <genre>
-
 🕳️ /dig — deep digging
 🔗 /trail <artist>
 🧠 /scene <artist>
-
 🧪 /rare
 /help
 """
@@ -129,20 +133,46 @@ def playlist(update,context):
 
         tracks=select_tracks(names)
 
-        update.message.reply_text(
-            f"📀 Playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
-        )
-        return
+    else:
+        seeds=extract_seed_artists()
+        graph=expand_artist_graph(seeds)
+        tracks=select_tracks(graph)
 
-    seeds=extract_seed_artists()
-    graph=expand_artist_graph(seeds)
-    tracks=select_tracks(graph)
+    # -------- MENSAJE PRINCIPAL --------
+
+    text = f"📀 Playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+
+    # -------- EXPORT OPTIONS --------
+
+    text += """
+
+━━━━━━━━━━━━━━━━━━━
+🎧 Export options
+━━━━━━━━━━━━━━━━━━━
+
+🔹 Soundiiz (recommended)
+1. Go to https://soundiiz.com
+2. Import → Text
+3. Paste this list
+4. Export to your preferred platform
+
+🔹 Spotify quick access
+Tap any track below
+"""
+
+    # -------- BOTONES SPOTIFY --------
+
+    buttons = []
+    for t in tracks:
+        url = spotify_search_url(t)
+        buttons.append([InlineKeyboardButton(t[:50], url=url)])
 
     update.message.reply_text(
-        f"📀 Discovery playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# -------- SCENE (FIX REAL) --------
+# -------- SCENE --------
 
 def scene(update,context):
 
@@ -175,14 +205,11 @@ def scene(update,context):
 
     counter={}
 
-    # 🔥 SOLO STYLE (clave)
     for rel in releases:
         styles = rel.get("style", [])
-
         for s in styles:
             counter[s] = counter.get(s, 0) + 1
 
-    # 🔥 fallback si no hay styles
     if not counter:
         for rel in releases:
             for g in rel.get("genre", []):
