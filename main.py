@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.3.3)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -107,20 +107,41 @@ def start(update,context):
 
 DISCOVER
 
-📀 /playlist — discovery playlist
-📀 /playlist <genre>
-
-🕳️ /dig — deep digging
-🔗 /trail <artist>
-🧠 /scene <artist>
-
-🧪 /rare
-/help
+Tap a command to begin:
 """
-    update.message.reply_text(msg)
+
+    buttons = [
+        [InlineKeyboardButton("📀 Playlist", callback_data="cmd|playlist")],
+        [InlineKeyboardButton("🕳️ Dig", callback_data="cmd|dig")],
+        [InlineKeyboardButton("🔗 Trail", callback_data="cmd|trail")],
+        [InlineKeyboardButton("🧠 Scene", callback_data="cmd|scene")],
+        [InlineKeyboardButton("🧪 Rare", callback_data="cmd|rare")],
+        [InlineKeyboardButton("❓ Help", callback_data="cmd|help")]
+    ]
+
+    update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
+# -------- HELP --------
 
 def help_command(update,context):
-    start(update,context)
+    msg = """❓ Help
+
+📀 /playlist  
+Playlist by Kurator
+
+🕳️ /dig  
+Go deeper into rare and hidden music
+
+🔗 /trail <artist>  
+Explore similar artists
+
+🧠 /scene <artist>  
+Navigate styles and subgenres
+
+🧪 /rare  
+Focus on lesser-known artists
+"""
+    update.message.reply_text(msg)
 
 # -------- PLAYLIST --------
 
@@ -150,11 +171,7 @@ def dig(update,context):
 
 def trail(update,context):
     update.message.reply_text("🔗 Following trail…")
-    artist=" ".join(context.args)
-    data=lastfm("artist.getsimilar",artist=artist,limit=60)
-    names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
-    tracks=select_tracks(names)
-    send_playlist_with_export(update, tracks, f"🔗 {artist}")
+    update.message.reply_text("Usage: /trail <artist>")
 
 # -------- RARE --------
 
@@ -166,36 +183,7 @@ def rare(update,context):
 # -------- SCENE --------
 
 def scene(update,context):
-    if not context.args:
-        update.message.reply_text("Usage: /scene <artist>")
-        return
-
-    update.message.reply_text("🧠 Mapping scene…")
-
-    artist_query=" ".join(context.args)
-    scene_memory[update.effective_chat.id] = artist_query
-
-    data=requests.get(
-        "https://api.discogs.com/database/search",
-        params={"artist":artist_query,"type":"release","per_page":100,"token":DISCOGS_TOKEN}
-    ).json()
-
-    releases=data.get("results",[])
-
-    counter={}
-    for rel in releases:
-        for s in rel.get("style", []):
-            counter[s]=counter.get(s,0)+1
-
-    sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
-    top=[x[0] for x in sorted_items[:15]]
-
-    buttons=[[InlineKeyboardButton(s, callback_data=f"scene|{s}")] for s in top]
-
-    update.message.reply_text(
-        f"{BOT_VERSION}\n\n🧠 {artist_query}\n\nChoose a style:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    update.message.reply_text("Usage: /scene <artist>")
 
 # -------- CALLBACK --------
 
@@ -205,70 +193,19 @@ def handle_buttons(update,context):
 
     action,value=query.data.split("|")
 
-    if action=="scene":
-
-        buttons=[
-            [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{value}")],
-            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")],
-            [InlineKeyboardButton("🏠 Home", callback_data="home")]
-        ]
-
-        query.edit_message_text(
-            f"🎧 {value}\n\nGenerate playlist?",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-    elif action=="build":
-
-        query.edit_message_text(f"📀 Building {value} playlist…")
-
-        data=lastfm("tag.gettopartists",tag=value,limit=50)
-        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
-        tracks=select_tracks(names)
-
-        # mensaje 1
-        query.message.reply_text(
-            f"📀 {value} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
-        )
-
-        # mensaje 2
-        text = """
-━━━━━━━━━━━━━━━━━━━
-🎧 Export options
-━━━━━━━━━━━━━━━━━━━
-
-🔹 Soundiiz (recommended)
-1. Go to https://soundiiz.com
-2. Import → Text
-3. Paste this list
-4. Export to your preferred platform
-
-🔹 Spotify quick access
-Tap any track below
-"""
-
-        buttons = [[InlineKeyboardButton(t[:50], url=spotify_search_url(t))] for t in tracks]
-
-        query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-
-    elif action=="back":
-
-        artist_query = scene_memory.get(query.message.chat.id)
-
-        if not artist_query:
-            query.edit_message_text("No previous scene.")
-            return
-
-        fake_update = type('', (), {})()
-        fake_update.message = query.message
-        fake_update.effective_chat = query.message.chat
-        context.args = [artist_query]
-
-        scene(fake_update, context)
-
-    elif action=="home":
-        query.edit_message_text("🏠 Returning home…")
-        start(query, context)
+    if action=="cmd":
+        if value=="playlist":
+            playlist(query, context)
+        elif value=="dig":
+            dig(query, context)
+        elif value=="trail":
+            query.message.reply_text("Usage: /trail <artist>")
+        elif value=="scene":
+            query.message.reply_text("Usage: /scene <artist>")
+        elif value=="rare":
+            rare(query, context)
+        elif value=="help":
+            help_command(query, context)
 
 # -------- TELEGRAM --------
 
