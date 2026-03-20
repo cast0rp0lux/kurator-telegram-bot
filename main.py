@@ -143,7 +143,7 @@ Kurator is built around taste, not algorithms.
 
 Some responses may take a few seconds — multiple sources are working to build something actually worth listening to.
 
-Just be patient ⏳
+Just be patient.
 """
     update.message.reply_text(msg)
 
@@ -252,21 +252,51 @@ def handle_buttons(update,context):
         elif value=="help":
             help_command(query, context)
 
-# -------- TELEGRAM --------
+    elif action=="scene":
+        buttons=[
+            [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{value}")],
+            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")]
+        ]
+        query.edit_message_text(
+            f"🎧 {value}\n\nGenerate playlist?",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
 
-updater=Updater(TELEGRAM_TOKEN)
-dp=updater.dispatcher
+    elif action=="build":
+        query.edit_message_text(f"📀 Building {value} playlist…")
 
-dp.add_handler(CommandHandler("start",start))
-dp.add_handler(CommandHandler("help",help_command))
-dp.add_handler(CommandHandler("playlist",playlist))
-dp.add_handler(CommandHandler("scene",scene))
-dp.add_handler(CommandHandler("dig",dig))
-dp.add_handler(CommandHandler("trail",trail))
-dp.add_handler(CommandHandler("rare",rare))
-dp.add_handler(CallbackQueryHandler(handle_buttons))
+        data=lastfm("tag.gettopartists",tag=value,limit=50)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
+        tracks=select_tracks(names)
 
-print(BOT_VERSION)
+        query.message.reply_text(
+            f"📀 {value} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+        )
 
-updater.start_polling()
-updater.idle()
+        text = """
+━━━━━━━━━━━━━━━━━━━
+🎧 Export options
+━━━━━━━━━━━━━━━━━━━
+
+🔹 Soundiiz (recommended)
+1. Go to https://soundiiz.com
+2. Import → Text
+3. Paste this list
+4. Export to your preferred platform
+
+🔹 Spotify quick access
+Tap any track below
+"""
+
+        buttons = [[InlineKeyboardButton(t[:50], url=spotify_search_url(t))] for t in tracks]
+
+        query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif action=="back":
+        artist_query = scene_memory.get(query.message.chat.id)
+        if artist_query:
+            context.args = [artist_query]
+            fake_update = type('', (), {})()
+            fake_update.message = query.message
+            fake_update.effective_chat = query.message.chat
+            scene(fake_update, context)
