@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4.2)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4.3)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -143,7 +143,7 @@ Kurator is built around taste, not algorithms.
 
 Some responses may take a few seconds — multiple sources are working to build something actually worth listening to.
 
-Just be patient.
+Just be patient ⏳
 """
     update.message.reply_text(msg)
 
@@ -174,7 +174,19 @@ def dig(update,context):
 # -------- TRAIL --------
 
 def trail(update,context):
-    update.message.reply_text("🔗 Trail\n\nType:\n/trail <artist>")
+
+    if not context.args:
+        update.message.reply_text("🔗 Trail\n\nType:\n/trail <artist>")
+        return
+
+    update.message.reply_text("🔗 Following trail…")
+
+    artist=" ".join(context.args)
+    data=lastfm("artist.getsimilar",artist=artist,limit=60)
+    names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
+    tracks=select_tracks(names)
+
+    send_playlist_with_export(update, tracks, f"🔗 {artist}")
 
 # -------- RARE --------
 
@@ -186,7 +198,37 @@ def rare(update,context):
 # -------- SCENE --------
 
 def scene(update,context):
-    update.message.reply_text("🧠 Scene\n\nType:\n/scene <artist>")
+
+    if not context.args:
+        update.message.reply_text("🧠 Scene\n\nType:\n/scene <artist>")
+        return
+
+    update.message.reply_text("🧠 Mapping scene…")
+
+    artist_query=" ".join(context.args)
+    scene_memory[update.effective_chat.id] = artist_query
+
+    data=requests.get(
+        "https://api.discogs.com/database/search",
+        params={"artist":artist_query,"type":"release","per_page":100,"token":DISCOGS_TOKEN}
+    ).json()
+
+    releases=data.get("results",[])
+
+    counter={}
+    for rel in releases:
+        for s in rel.get("style", []):
+            counter[s]=counter.get(s,0)+1
+
+    sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
+    top=[x[0] for x in sorted_items[:15]]
+
+    buttons=[[InlineKeyboardButton(s, callback_data=f"scene|{s}")] for s in top]
+
+    update.message.reply_text(
+        f"{BOT_VERSION}\n\n🧠 {artist_query}\n\nChoose a style:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 # -------- CALLBACK --------
 
