@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4.1)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4.2)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -127,7 +127,7 @@ def help_command(update,context):
 Playlist by Kurator
 
 🕳️ /dig  
-Go deeper into rare and hidden music
+Deep discovery
 
 🔗 /trail <artist>  
 Explore similar artists
@@ -136,7 +136,14 @@ Explore similar artists
 Navigate styles and subgenres
 
 🧪 /rare  
-Focus on lesser-known artists
+Hidden artists
+
+
+Kurator is built around taste, not algorithms.
+
+Some responses may take a few seconds — multiple sources are working to build something actually worth listening to.
+
+Just be patient.
 """
     update.message.reply_text(msg)
 
