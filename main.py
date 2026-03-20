@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.3.1)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.3.2)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -23,6 +23,37 @@ scene_memory = {}
 
 def spotify_search_url(track):
     return f"https://open.spotify.com/search/{quote(track)}"
+
+def send_playlist_with_export(update, tracks, title="📀 Playlist"):
+    # Mensaje 1 (copy limpio)
+    update.message.reply_text(
+        f"{title} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+    )
+
+    # Mensaje 2 (export)
+    text = """
+━━━━━━━━━━━━━━━━━━━
+🎧 Export options
+━━━━━━━━━━━━━━━━━━━
+
+🔹 Soundiiz (recommended)
+1. Go to https://soundiiz.com
+2. Import → Text
+3. Paste this list
+4. Export to your preferred platform
+
+🔹 Spotify quick access
+Tap any track below
+"""
+
+    buttons = []
+    for t in tracks:
+        buttons.append([InlineKeyboardButton(t[:50], url=spotify_search_url(t))])
+
+    update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 def lastfm(method, **params):
     base="http://ws.audioscrobbler.com/2.0/"
@@ -113,36 +144,31 @@ def playlist(update,context):
         graph=expand_artist_graph(seeds)
         tracks=select_tracks(graph)
 
-    # ✅ MENSAJE 1: SOLO PLAYLIST
-    update.message.reply_text(
-        f"📀 Playlist ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
-    )
+    send_playlist_with_export(update, tracks)
 
-    # ✅ MENSAJE 2: EXPORT
-    text = """
-━━━━━━━━━━━━━━━━━━━
-🎧 Export options
-━━━━━━━━━━━━━━━━━━━
+# -------- DIG --------
 
-🔹 Soundiiz (recommended)
-1. Go to https://soundiiz.com
-2. Import → Text
-3. Paste this list
-4. Export to your preferred platform
+def dig(update,context):
+    update.message.reply_text("🕳️ Digging deep…")
+    tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
+    send_playlist_with_export(update, tracks, "🕳️ Dig")
 
-🔹 Spotify quick access
-Tap any track below
-"""
+# -------- TRAIL --------
 
-    buttons = []
-    for t in tracks:
-        url = spotify_search_url(t)
-        buttons.append([InlineKeyboardButton(t[:50], url=url)])
+def trail(update,context):
+    update.message.reply_text("🔗 Following trail…")
+    artist=" ".join(context.args)
+    data=lastfm("artist.getsimilar",artist=artist,limit=60)
+    names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
+    tracks=select_tracks(names)
+    send_playlist_with_export(update, tracks, f"🔗 {artist}")
 
-    update.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+# -------- RARE --------
+
+def rare(update,context):
+    update.message.reply_text("🧪 Searching rare artists…")
+    tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
+    send_playlist_with_export(update, tracks, "🧪 Rare")
 
 # -------- SCENE --------
 
@@ -165,9 +191,7 @@ def scene(update,context):
         "token":DISCOGS_TOKEN
     }
 
-    r=requests.get(url,params=params)
-    data=r.json()
-
+    data=requests.get(url,params=params).json()
     releases=data.get("results",[])
 
     if not releases:
@@ -175,23 +199,14 @@ def scene(update,context):
         return
 
     counter={}
-
     for rel in releases:
-        styles = rel.get("style", [])
-        for s in styles:
-            counter[s] = counter.get(s, 0) + 1
-
-    if not counter:
-        for rel in releases:
-            for g in rel.get("genre", []):
-                counter[g] = counter.get(g, 0) + 1
+        for s in rel.get("style", []):
+            counter[s]=counter.get(s,0)+1
 
     sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
     top=[x[0] for x in sorted_items[:15]]
 
-    buttons=[]
-    for s in top:
-        buttons.append([InlineKeyboardButton(s, callback_data=f"confirm|{s}")])
+    buttons=[[InlineKeyboardButton(s, callback_data=f"build|{s}")] for s in top]
 
     update.message.reply_text(
         f"{BOT_VERSION}\n\n🧠 {artist_query}\n\nChoose a style:",
@@ -206,70 +221,40 @@ def handle_buttons(update,context):
 
     action,value=query.data.split("|")
 
-    if action=="confirm":
-        style=value
+    if action=="build":
+        query.edit_message_text(f"📀 Building {value} playlist…")
 
-        buttons=[
-            [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{style}")],
-            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")],
-            [InlineKeyboardButton("🏠 Home", callback_data="home")]
-        ]
-
-        query.edit_message_text(
-            f"🎧 {style}\n\nGenerate playlist?",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-    elif action=="build":
-        style=value
-
-        query.edit_message_text(f"📀 Building {style} playlist…")
-
-        data=lastfm("tag.gettopartists",tag=style,limit=50)
+        data=lastfm("tag.gettopartists",tag=value,limit=50)
         names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
-
         tracks=select_tracks(names)
 
-        query.edit_message_text(
-            f"📀 {style} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+        # mensaje 1
+        query.message.reply_text(
+            f"📀 {value} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
         )
 
-    elif action=="back":
-        artist_query = scene_memory.get(query.message.chat.id)
+        # mensaje 2
+        text = """
+━━━━━━━━━━━━━━━━━━━
+🎧 Export options
+━━━━━━━━━━━━━━━━━━━
 
-        if not artist_query:
-            query.edit_message_text("No previous scene.")
-            return
+🔹 Soundiiz (recommended)
+1. Go to https://soundiiz.com
+2. Import → Text
+3. Paste this list
+4. Export to your preferred platform
 
-        fake_update = type('', (), {})()
-        fake_update.message = query.message
-        fake_update.effective_chat = query.message.chat
-        context.args = [artist_query]
+🔹 Spotify quick access
+Tap any track below
+"""
 
-        scene(fake_update, context)
+        buttons = [[InlineKeyboardButton(t[:50], url=spotify_search_url(t))] for t in tracks]
 
-    elif action=="home":
-        send_home(query)
-
-# -------- OTROS --------
-
-def dig(update,context):
-    update.message.reply_text("🕳️ Digging deep…")
-    tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
-    update.message.reply_text("\n".join(tracks))
-
-def trail(update,context):
-    update.message.reply_text("🔗 Following trail…")
-    artist=" ".join(context.args)
-    data=lastfm("artist.getsimilar",artist=artist,limit=60)
-    names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
-    tracks=select_tracks(names)
-    update.message.reply_text("\n".join(tracks))
-
-def rare(update,context):
-    update.message.reply_text("🧪 Searching rare artists…")
-    tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
-    update.message.reply_text("\n".join(tracks))
+        query.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
 
 # -------- TELEGRAM --------
 
