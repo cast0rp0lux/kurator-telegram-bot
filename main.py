@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4.1)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -45,7 +45,6 @@ Tap any track below
 """
 
     buttons = [[InlineKeyboardButton(t[:50], url=spotify_search_url(t))] for t in tracks]
-
     update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 def lastfm(method, **params):
@@ -105,17 +104,15 @@ def select_tracks(artists):
 def start(update,context):
     msg=f"""{BOT_VERSION}
 
-DISCOVER
-
 Tap a command to begin:
 """
 
     buttons = [
-        [InlineKeyboardButton("📀 Playlist", callback_data="cmd|playlist")],
-        [InlineKeyboardButton("🕳️ Dig", callback_data="cmd|dig")],
-        [InlineKeyboardButton("🔗 Trail", callback_data="cmd|trail")],
-        [InlineKeyboardButton("🧠 Scene", callback_data="cmd|scene")],
-        [InlineKeyboardButton("🧪 Rare", callback_data="cmd|rare")],
+        [InlineKeyboardButton("📀 Playlist (by Kurator)", callback_data="cmd|playlist")],
+        [InlineKeyboardButton("🕳️ Dig (deep discovery)", callback_data="cmd|dig")],
+        [InlineKeyboardButton("🔗 Trail (artist)", callback_data="cmd|trail")],
+        [InlineKeyboardButton("🧠 Scene (artist)", callback_data="cmd|scene")],
+        [InlineKeyboardButton("🧪 Rare (hidden artists)", callback_data="cmd|rare")],
         [InlineKeyboardButton("❓ Help", callback_data="cmd|help")]
     ]
 
@@ -170,8 +167,7 @@ def dig(update,context):
 # -------- TRAIL --------
 
 def trail(update,context):
-    update.message.reply_text("🔗 Following trail…")
-    update.message.reply_text("Usage: /trail <artist>")
+    update.message.reply_text("🔗 Trail\n\nType:\n/trail <artist>")
 
 # -------- RARE --------
 
@@ -183,7 +179,7 @@ def rare(update,context):
 # -------- SCENE --------
 
 def scene(update,context):
-    update.message.reply_text("Usage: /scene <artist>")
+    update.message.reply_text("🧠 Scene\n\nType:\n/scene <artist>")
 
 # -------- CALLBACK --------
 
@@ -199,9 +195,9 @@ def handle_buttons(update,context):
         elif value=="dig":
             dig(query, context)
         elif value=="trail":
-            query.message.reply_text("Usage: /trail <artist>")
+            trail(query, context)
         elif value=="scene":
-            query.message.reply_text("Usage: /scene <artist>")
+            scene(query, context)
         elif value=="rare":
             rare(query, context)
         elif value=="help":
