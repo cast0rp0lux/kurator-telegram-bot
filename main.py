@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v3.0)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.5)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -26,6 +26,7 @@ def spotify_search_url(track):
     return f"https://open.spotify.com/search/{quote(track)}"
 
 def send_playlist_with_export(update, tracks, title="📀 Playlist"):
+
     chat_id = update.effective_chat.id
     spotify_memory[chat_id] = tracks
 
@@ -76,15 +77,23 @@ def extract_seed_artists():
         if artist: counter[artist]+=1
     return [a for a,_ in counter.most_common(SEED_ARTISTS)]
 
+def expand_artist_graph(seed_artists):
+    pool=set()
+    for artist in seed_artists:
+        data=lastfm("artist.getsimilar",artist=artist,limit=SIMILAR_EXPANSION)
+        for s in data.get("similarartists",{}).get("artist",[]):
+            if int(s.get("listeners",0))>2000000: continue
+            pool.add(s["name"])
+    return list(pool)
+
 def select_tracks(artists):
     tracks=[]
     random.shuffle(artists)
-
     for a in artists:
         if len(tracks)>=PLAYLIST_SIZE: break
         if normalize(a) in history["artists"]: continue
 
-        data=lastfm("artist.gettoptracks",artist=a,limit=50)
+        data=lastfm("artist.gettoptracks",artist=a,limit=10)
         top=data.get("toptracks",{}).get("track",[])
         random.shuffle(top)
 
@@ -118,12 +127,9 @@ Tap a command to begin:
 
     update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
-# -------- PLAYLIST (NO TOCADO) --------
+# -------- PLAYLIST --------
 
 def playlist(update,context):
-
-    history["artists"].clear()
-    history["tracks"].clear()
 
     if context.args:
         tag=" ".join(context.args)
@@ -135,83 +141,104 @@ def playlist(update,context):
 
     else:
         update.message.reply_text("📀 Building playlist…")
-        seeds=extract_seed_artists()
-        tracks=select_tracks(seeds)
+        tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
         send_playlist_with_export(update, tracks)
 
-# -------- DIG (MEDIUM DEPTH) --------
+# -------- DIG (MODIFICADO) --------
 
 def dig(update,context):
-
-    history["artists"].clear()
-    history["tracks"].clear()
-
     update.message.reply_text("🕳️ Digging deep…")
 
-    seeds = extract_seed_artists()[:10]
+    seeds = extract_seed_artists()[:12]
 
     pool=set()
     for artist in seeds:
-        data=lastfm("artist.getsimilar",artist=artist,limit=100)
+        data=lastfm("artist.getsimilar",artist=artist,limit=40)
         for s in data.get("similarartists",{}).get("artist",[]):
-            if int(s.get("listeners",0)) > 500000:
+            if int(s.get("listeners",0)) > 700000:
                 continue
             pool.add(s["name"])
 
-    tracks=select_tracks(list(pool))
+    pool = list(pool)
+    random.shuffle(pool)
+    pool = pool[:100]
+
+    tracks=select_tracks(pool)
     send_playlist_with_export(update, tracks, "🕳️ Dig")
 
-# -------- TRAIL (MULTI-HOP) --------
+# -------- TRAIL --------
 
 def trail(update,context):
-
-    history["artists"].clear()
-    history["tracks"].clear()
 
     if not context.args:
         update.message.reply_text("🔗 Trail\n\nType:\n/trail <artist>")
         return
 
+    update.message.reply_text("🔗 Following trail…")
+
     artist=" ".join(context.args)
-    update.message.reply_text(f"🔗 Following {artist} trail…")
+    data=lastfm("artist.getsimilar",artist=artist,limit=60)
+    names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
+    tracks=select_tracks(names)
 
-    level1 = lastfm("artist.getsimilar",artist=artist,limit=50).get("similarartists",{}).get("artist",[])
-
-    level2=[]
-    for a in level1:
-        data=lastfm("artist.getsimilar",artist=a["name"],limit=30)
-        level2 += data.get("similarartists",{}).get("artist",[])
-
-    pool=set()
-    for a in level1 + level2:
-        if int(a.get("listeners",0)) < 1000000:
-            pool.add(a["name"])
-
-    tracks=select_tracks(list(pool))
     send_playlist_with_export(update, tracks, f"🔗 {artist}")
 
-# -------- RARE (DEEP) --------
+# -------- RARE (MODIFICADO) --------
 
 def rare(update,context):
-
-    history["artists"].clear()
-    history["tracks"].clear()
-
     update.message.reply_text("🧪 Searching rare artists…")
 
-    seeds = extract_seed_artists()[:8]
+    seeds = extract_seed_artists()[:10]
 
     pool=set()
     for artist in seeds:
-        data=lastfm("artist.getsimilar",artist=artist,limit=150)
+        data=lastfm("artist.getsimilar",artist=artist,limit=60)
         for s in data.get("similarartists",{}).get("artist",[]):
-            if int(s.get("listeners",0)) < 100000:
-                pool.add(s["name"])
+            if int(s.get("listeners",0)) > 150000:
+                continue
+            pool.add(s["name"])
 
-    tracks=select_tracks(list(pool))
+    pool = list(pool)
+    random.shuffle(pool)
+    pool = pool[:120]
+
+    tracks=select_tracks(pool)
     send_playlist_with_export(update, tracks, "🧪 Rare")
 
-# -------- CALLBACK --------
+# -------- RESTO SIN CAMBIOS --------
+
+def scene(update,context):
+
+    if not context.args:
+        update.message.reply_text("🧠 Scene\n\nType:\n/scene <artist>")
+        return
+
+    update.message.reply_text("🧠 Mapping scene…")
+
+    artist_query=" ".join(context.args)
+    scene_memory[update.effective_chat.id] = artist_query
+
+    data=requests.get(
+        "https://api.discogs.com/database/search",
+        params={"artist":artist_query,"type":"release","per_page":100,"token":DISCOGS_TOKEN}
+    ).json()
+
+    releases=data.get("results",[])
+
+    counter={}
+    for rel in releases:
+        for s in rel.get("style", []):
+            counter[s]=counter.get(s,0)+1
+
+    sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
+    top=[x[0] for x in sorted_items[:15]]
+
+    buttons=[[InlineKeyboardButton(s, callback_data=f"scene|{s}")] for s in top]
+
+    update.message.reply_text(
+        f"{BOT_VERSION}\n\n🧠 {artist_query}\n\nChoose a style:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 def handle_buttons(update,context):
     query=update.callback_query
@@ -226,8 +253,12 @@ def handle_buttons(update,context):
             dig(query, context)
         elif value=="trail":
             trail(query, context)
+        elif value=="scene":
+            scene(query, context)
         elif value=="rare":
             rare(query, context)
+        elif value=="help":
+            help_command(query, context)
 
     elif action=="spotify":
 
@@ -254,6 +285,7 @@ dp=updater.dispatcher
 
 dp.add_handler(CommandHandler("start",start))
 dp.add_handler(CommandHandler("playlist",playlist))
+dp.add_handler(CommandHandler("scene",scene))
 dp.add_handler(CommandHandler("dig",dig))
 dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
