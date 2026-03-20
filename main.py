@@ -108,8 +108,6 @@ def select_tracks(artists):
 
     return tracks
 
-# -------- START --------
-
 def start(update,context):
     msg=f"""{BOT_VERSION}
 
@@ -127,7 +125,32 @@ Tap a command to begin:
 
     update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
-# -------- PLAYLIST --------
+def help_command(update,context):
+    msg = """❓ Help
+
+📀 /playlist  
+Playlist by Kurator
+
+🕳️ /dig  
+Deep discovery
+
+🔗 /trail <artist>  
+Explore similar artists
+
+🧠 /scene <artist>  
+Navigate styles and subgenres
+
+🧪 /rare  
+Hidden artists
+
+
+Kurator is built around taste, not algorithms.
+
+Some responses may take a few seconds — multiple sources are working to build something actually worth listening to.
+
+Just be patient.
+"""
+    update.message.reply_text(msg)
 
 def playlist(update,context):
 
@@ -144,7 +167,7 @@ def playlist(update,context):
         tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
         send_playlist_with_export(update, tracks)
 
-# -------- DIG (MODIFICADO) --------
+# -------- DIG MOD --------
 
 def dig(update,context):
     update.message.reply_text("🕳️ Digging deep…")
@@ -183,7 +206,7 @@ def trail(update,context):
 
     send_playlist_with_export(update, tracks, f"🔗 {artist}")
 
-# -------- RARE (MODIFICADO) --------
+# -------- RARE MOD --------
 
 def rare(update,context):
     update.message.reply_text("🧪 Searching rare artists…")
@@ -204,8 +227,6 @@ def rare(update,context):
 
     tracks=select_tracks(pool)
     send_playlist_with_export(update, tracks, "🧪 Rare")
-
-# -------- RESTO SIN CAMBIOS --------
 
 def scene(update,context):
 
@@ -278,12 +299,65 @@ def handle_buttons(update,context):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-# -------- TELEGRAM --------
+    elif action=="scene":
+        buttons=[
+            [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{value}")],
+            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")]
+        ]
+        query.edit_message_text(
+            f"🎧 {value}\n\nGenerate playlist?",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif action=="build":
+        query.edit_message_text(f"📀 Building {value} playlist…")
+
+        data=lastfm("tag.gettopartists",tag=value,limit=50)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
+        tracks=select_tracks(names)
+
+        spotify_memory[query.message.chat.id] = tracks
+
+        query.message.reply_text(
+            f"📀 {value} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+        )
+
+        text = """
+━━━━━━━━━━━━━━━━━━━
+🎧 Export options
+━━━━━━━━━━━━━━━━━━━
+
+🔹 Soundiiz (recommended)
+1. Go to https://soundiiz.com
+2. Import → Text
+3. Paste this list
+4. Export to your preferred platform
+"""
+
+        buttons = [
+            [InlineKeyboardButton("🎧 Show Spotify links", callback_data="spotify|show")]
+        ]
+
+        query.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            disable_web_page_preview=True
+        )
+
+    elif action=="back":
+        artist_query = scene_memory.get(query.message.chat.id)
+        if artist_query:
+            context.args = [artist_query]
+            fake_update = type('', (), {})()
+            fake_update.message = query.message
+            fake_update.effective_chat = query.message.chat
+            scene(fake_update, context)
 
 updater=Updater(TELEGRAM_TOKEN)
 dp=updater.dispatcher
 
 dp.add_handler(CommandHandler("start",start))
+dp.add_handler(CommandHandler("help",help_command))
 dp.add_handler(CommandHandler("playlist",playlist))
 dp.add_handler(CommandHandler("scene",scene))
 dp.add_handler(CommandHandler("dig",dig))
