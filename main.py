@@ -300,3 +300,22 @@ Tap any track below
             fake_update.message = query.message
             fake_update.effective_chat = query.message.chat
             scene(fake_update, context)
+
+# -------- TELEGRAM --------
+
+updater=Updater(TELEGRAM_TOKEN)
+dp=updater.dispatcher
+
+dp.add_handler(CommandHandler("start",start))
+dp.add_handler(CommandHandler("help",help_command))
+dp.add_handler(CommandHandler("playlist",playlist))
+dp.add_handler(CommandHandler("scene",scene))
+dp.add_handler(CommandHandler("dig",dig))
+dp.add_handler(CommandHandler("trail",trail))
+dp.add_handler(CommandHandler("rare",rare))
+dp.add_handler(CallbackQueryHandler(handle_buttons))
+
+print(BOT_VERSION)
+
+updater.start_polling()
+updater.idle()
