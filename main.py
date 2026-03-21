@@ -21,7 +21,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v3.2.0)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v3.3.0)"
 
 LASTFM_USER    = "burbq"
 LASTFM_API     = os.environ["LASTFM_API_KEY"]
@@ -29,14 +29,19 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 DISCOGS_TOKEN  = os.environ["DISCOGS_TOKEN"]
 
 SCROBBLE_LIMIT        = 600
-SEED_ARTISTS          = 25
-SIMILAR_EXPANSION     = 40
+SEED_ARTISTS          = 35     # ↑ from 25 — wider taste base
+SIMILAR_EXPANSION     = 60     # ↑ from 40 — more artists per seed
 PLAYLIST_SIZE         = 30
 RARE_MAX_LISTENERS    = 500_000
-RARE_CANDIDATE_CAP    = 150    # FIX #5: cap before listener lookups
+RARE_CANDIDATE_CAP    = 150
 TAGS_PAGE_SIZE        = 24
-CALLBACK_DATA_MAX     = 60     # FIX #9: Telegram limit is 64, stay safe
-SPOTIFY_STORE_MAX     = 20     # FIX #8: max entries in _spotify_store
+CALLBACK_DATA_MAX     = 60
+SPOTIFY_STORE_MAX     = 20
+
+# Track selection tuning
+TRACK_FETCH_LIMIT     = 50     # fetch deeper catalog per artist
+TRACK_SKIP_TOP        = 5      # skip the N most played tracks (avoid obvious hits)
+TRACK_PLAYCOUNT_MAX   = 500_000  # discard tracks with huge playcount (mainstream filter)
 
 HISTORY_FILE   = "history.json"
 TAG_INDEX_FILE = "tag_index.json"
@@ -216,10 +221,34 @@ def expand_artist_graph_rare(seed_artists):
 # ─── Track selection ──────────────────────────────────────────────────────────
 
 def _fetch_top_track(artist):
-    data = lastfm("artist.gettoptracks", artist=artist, limit=10)
+    """
+    Smarter track selection:
+    - Fetches 50 tracks instead of 10 (deeper catalog)
+    - Skips the top 5 most played (avoids obvious hits)
+    - Filters out tracks above TRACK_PLAYCOUNT_MAX (mainstream filter)
+    - Shuffles remaining candidates for variety
+    """
+    data = lastfm("artist.gettoptracks", artist=artist, limit=TRACK_FETCH_LIMIT)
     top  = data.get("toptracks", {}).get("track", [])
-    random.shuffle(top)
-    for t in top:
+
+    # Skip the very top hits
+    pool = top[TRACK_SKIP_TOP:] or top  # fallback if catalog is small
+
+    # Filter by playcount
+    filtered = []
+    for t in pool:
+        try:
+            playcount = int(t.get("playcount", 0))
+        except (ValueError, TypeError):
+            playcount = 0
+        if playcount < TRACK_PLAYCOUNT_MAX:
+            filtered.append(t)
+
+    if not filtered:
+        filtered = pool  # fallback if filter was too aggressive
+
+    random.shuffle(filtered)
+    for t in filtered:
         key = f"{normalize(artist)}-{normalize(t['name'])}"
         if key not in history["tracks"]:
             return (artist, t["name"], key)
@@ -230,7 +259,7 @@ def select_tracks(artists):
     tracks     = []
     keys_added = set()
     random.shuffle(artists)
-    candidates = artists[:PLAYLIST_SIZE * 4]
+    candidates = artists[:PLAYLIST_SIZE * 7]  # ↑ from *4 — evaluate more artists
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         futures = [ex.submit(_fetch_top_track, a) for a in candidates]
@@ -376,9 +405,13 @@ def playlist(update, context):
     msg = update.message
     if context.args:
         tag = " ".join(context.args)
-        msg.reply_text(f"🔍 Searching top artists for \"{tag}\"…")
-        data  = lastfm("tag.gettopartists", tag=tag, limit=50)
-        names = [a["name"] for a in data.get("topartists", {}).get("artist", [])]
+        msg.reply_text(f"🔍 Searching tracks tagged \"{tag}\"…")
+        # tag.gettoptracks gives direct track results — more varied than gettopartists
+        data  = lastfm("tag.gettoptracks", tag=tag, limit=100)
+        items = data.get("tracks", {}).get("track", [])
+        # Build "Artist - Track" strings directly, skip history check here (select_tracks handles it)
+        names = list({t["artist"]["name"] for t in items if t.get("artist")})
+        random.shuffle(names)
         send_playlist(msg, select_tracks(names), title=f"🔍 {tag}", branded=False)
     else:
         msg.reply_text("📀 Kurator is selecting tracks for you… ⏳")
@@ -718,8 +751,10 @@ def handle_buttons(update, context):
     # ── build: playlist from scene style ─────────────────────────────────────
     elif action == "build":
         query.edit_message_text(f"🔍 Building {value} playlist… ⏳")
-        data  = lastfm("tag.gettopartists", tag=value, limit=50)
-        names = [a["name"] for a in data.get("topartists", {}).get("artist", [])]
+        data  = lastfm("tag.gettoptracks", tag=value, limit=100)
+        items = data.get("tracks", {}).get("track", [])
+        names = list({t["artist"]["name"] for t in items if t.get("artist")})
+        random.shuffle(names)
         send_playlist(message, select_tracks(names), title=f"🔍 {value}", branded=False)
 
 # ─── Boot ─────────────────────────────────────────────────────────────────────
