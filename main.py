@@ -262,7 +262,8 @@ def send_playlist(message, tracks, title="✦ Kurator's Pick", branded=True):
         f"{title} — {len(tracks)} tracks\n"
         f"{subtitle}\n\n"
         f"{track_list}\n\n"
-        f"📤 Export via https://soundiiz.com",
+        f"Import plain text at soundiiz.com",
+        disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎧 Open tracks in Spotify", callback_data=f"spotify|{key}")],
             [InlineKeyboardButton("⬅ Main menu",               callback_data="cmd|menu")],
@@ -326,7 +327,7 @@ Top artists for any genre tag (e.g. /playlist jazz).
 Kurator is built around taste, not algorithms.
 Some responses may take a few seconds.
 
-be patient.
+Be patient.
 """
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
