@@ -1,33 +1,32 @@
-import os  
-import requests  
-import random  
-from collections import Counter  
-from urllib.parse import quote  
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler  
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup  
+import os
+import requests
+import random
+from collections import Counter
+from urllib.parse import quote
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4.4)"  
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4.3)"
 
-LASTFM_USER = "burbq"  
-LASTFM_API = os.environ["LASTFM_API_KEY"]  
-TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]  
-DISCOGS_TOKEN = os.environ["DISCOGS_TOKEN"]  
+LASTFM_USER = "burbq"
+LASTFM_API = os.environ["LASTFM_API_KEY"]
+TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+DISCOGS_TOKEN = os.environ["DISCOGS_TOKEN"]
 
-SCRIBBLE_LIMIT = 600  
-SEED_ARTISTS = 25  
-SIMILAR_EXPANSION = 40  
-PLAYLIST_SIZE = 30  
+SCRIBBLE_LIMIT = 600
+SEED_ARTISTS = 25
+SIMILAR_EXPANSION = 40
+PLAYLIST_SIZE = 30
 
-history = {"artists":set(),"tracks":set()}  
-scene_memory = {}  
+history = {"artists":set(),"tracks":set()}
+scene_memory = {}
 
-# 🔥 SOLO TAGS PINCHADAS
 tag_index = set()
 
-def spotify_search_url(track):  
-    return f"https://open.spotify.com/search/{quote(track)}"  
+def spotify_search_url(track):
+    return f"https://open.spotify.com/search/{quote(track)}"
 
-def send_playlist_with_export(update, tracks, title="📀 Playlist"):  
+def send_playlist_with_export(update, tracks, title="📀 Playlist"):
     update.message.reply_text(
         f"{title} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
     )
@@ -36,6 +35,15 @@ def send_playlist_with_export(update, tracks, title="📀 Playlist"):
 ━━━━━━━━━━━━━━━━━━━
 🎧 Export options
 ━━━━━━━━━━━━━━━━━━━
+
+🔹 Soundiiz (recommended)
+1. Go to https://soundiiz.com
+2. Import → Text
+3. Paste this list
+4. Export to your preferred platform
+
+🔹 Spotify quick access
+Tap any track below
 """
 
     buttons = [[InlineKeyboardButton(t[:50], url=spotify_search_url(t))] for t in tracks]
@@ -102,63 +110,126 @@ Tap a command to begin:
 """
 
     buttons = [
-        [InlineKeyboardButton("📀 Playlist", callback_data="cmd|playlist")],
-        [InlineKeyboardButton("🕳️ Dig", callback_data="cmd|dig")],
-        [InlineKeyboardButton("🔗 Trail", callback_data="cmd|trail")],
-        [InlineKeyboardButton("🧠 Scene", callback_data="cmd|scene")],
-        [InlineKeyboardButton("🧠 Tags", callback_data="cmd|tags")],
-        [InlineKeyboardButton("🧪 Rare", callback_data="cmd|rare")]
+        [InlineKeyboardButton("📀 Playlist (by Kurator)", callback_data="cmd|playlist")],
+        [InlineKeyboardButton("🕳️ Dig (deep discovery)", callback_data="cmd|dig")],
+        [InlineKeyboardButton("🔗 Trail (artist)", callback_data="cmd|trail")],
+        [InlineKeyboardButton("🧠 Scene (artist)", callback_data="cmd|scene")],
+        [InlineKeyboardButton("🧠 Tags (explore)", callback_data="cmd|tags")],
+        [InlineKeyboardButton("🧪 Rare (hidden artists)", callback_data="cmd|rare")],
+        [InlineKeyboardButton("❓ Help", callback_data="cmd|help")]
     ]
 
     update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
-# -------- TAGS --------
+# -------- HELP --------
 
-def build_tags_keyboard(edit_mode=False):
+def help_command(update,context):
+    msg = """❓ Help
+
+📀 /playlist  
+Playlist by Kurator
+
+🕳️ /dig  
+Deep discovery
+
+🔗 /trail <artist>  
+Explore similar artists
+
+🧠 /scene <artist>  
+Navigate styles and subgenres
+
+🧠 /tags  
+Explore collected genres
+
+🧪 /rare  
+Hidden artists
+"""
+    update.message.reply_text(msg)
+
+# -------- TAGS (MEJORADO) --------
+
+def tags(update, context):
+
+    if not tag_index:
+        update.message.reply_text("No tags collected yet. Use /scene first.")
+        return
+
     sorted_tags = sorted(list(tag_index))
+
     buttons = []
     row = []
 
-    for i, t in enumerate(sorted_tags):
+    for t in sorted_tags:
+        row.append(InlineKeyboardButton(t, callback_data=f"scene|{t}"))
 
-        if edit_mode:
-            row.append(InlineKeyboardButton(t, callback_data=f"scene|{t}"))
-            row.append(InlineKeyboardButton("❌", callback_data=f"confirm_delete|{t}"))
-        else:
-            row.append(InlineKeyboardButton(t, callback_data=f"scene|{t}"))
-
-        if len(row) >= 2:
+        if len(row) == 2:
             buttons.append(row)
             row = []
 
     if row:
         buttons.append(row)
 
-    # botón editar / salir
-    if edit_mode:
-        buttons.append([InlineKeyboardButton("✔ Done", callback_data="edit_off")])
-    else:
-        buttons.append([InlineKeyboardButton("✏ Edit", callback_data="edit_on")])
-
-    return InlineKeyboardMarkup(buttons)
-
-def tags(update, context):
-
-    if not tag_index:
-        update.message.reply_text("No tags yet.")
-        return
+    buttons.append([InlineKeyboardButton("✏ Edit", callback_data="tags_edit")])
 
     update.message.reply_text(
         f"{BOT_VERSION}\n\n🧠 Tag Library",
-        reply_markup=build_tags_keyboard(edit_mode=False)
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
+
+# -------- PLAYLIST --------
+
+def playlist(update,context):
+
+    if context.args:
+        tag=" ".join(context.args)
+        update.message.reply_text(f"📀 Building {tag} playlist…")
+        data=lastfm("tag.gettopartists",tag=tag,limit=50)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
+        tracks=select_tracks(names)
+        send_playlist_with_export(update, tracks, f"📀 {tag}")
+
+    else:
+        update.message.reply_text("📀 Building playlist…")
+        tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
+        send_playlist_with_export(update, tracks)
+
+# -------- DIG --------
+
+def dig(update,context):
+    update.message.reply_text("🕳️ Digging deep…")
+    tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
+    send_playlist_with_export(update, tracks, "🕳️ Dig")
+
+# -------- TRAIL --------
+
+def trail(update,context):
+
+    if not context.args:
+        update.message.reply_text("🔗 Trail\n\nType:\n/trail <artist>")
+        return
+
+    update.message.reply_text("🔗 Following trail…")
+
+    artist=" ".join(context.args)
+    data=lastfm("artist.getsimilar",artist=artist,limit=60)
+    names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
+    tracks=select_tracks(names)
+
+    send_playlist_with_export(update, tracks, f"🔗 {artist}")
+
+# -------- RARE --------
+
+def rare(update,context):
+    update.message.reply_text("🧪 Searching rare artists…")
+    tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
+    send_playlist_with_export(update, tracks, "🧪 Rare")
 
 # -------- SCENE --------
 
 def scene(update,context):
 
     if not context.args:
-        update.message.reply_text("/scene <artist>")
+        update.message.reply_text("🧠 Scene\n\nType:\n/scene <artist>")
         return
 
     update.message.reply_text("🧠 Mapping scene…")
@@ -177,6 +248,9 @@ def scene(update,context):
     for rel in releases:
         for s in rel.get("style", []):
             counter[s]=counter.get(s,0)+1
+            tag_index.add(s)
+        for g in rel.get("genre", []):
+            tag_index.add(g)
 
     sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
     top=[x[0] for x in sorted_items[:15]]
@@ -184,7 +258,7 @@ def scene(update,context):
     buttons=[[InlineKeyboardButton(s, callback_data=f"scene|{s}")] for s in top]
 
     update.message.reply_text(
-        f"{BOT_VERSION}\n\n🧠 {artist_query}",
+        f"{BOT_VERSION}\n\n🧠 {artist_query}\n\nChoose a style:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -194,48 +268,126 @@ def handle_buttons(update,context):
     query=update.callback_query
     query.answer()
 
-    action,value=query.data.split("|") if "|" in query.data else (query.data,None)
+    action,value=query.data.split("|")
 
-    if action=="scene":
-        tag_index.add(value)
+    if action=="cmd":
+        if value=="playlist":
+            playlist(query, context)
+        elif value=="dig":
+            dig(query, context)
+        elif value=="trail":
+            trail(query, context)
+        elif value=="scene":
+            scene(query, context)
+        elif value=="tags":
+            tags(query, context)
+        elif value=="rare":
+            rare(query, context)
+        elif value=="help":
+            help_command(query, context)
 
+    elif action=="scene":
         buttons=[
             [InlineKeyboardButton("✅ Generate playlist", callback_data=f"build|{value}")],
-            [InlineKeyboardButton("⬅ Back", callback_data="cmd|tags")]
+            [InlineKeyboardButton("⬅ Back", callback_data="back|scene")]
         ]
-
         query.edit_message_text(
-            f"🎧 {value}",
+            f"🎧 {value}\n\nGenerate playlist?",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    elif action=="edit_on":
-        query.edit_message_reply_markup(reply_markup=build_tags_keyboard(True))
+    elif action=="tags_edit":
 
-    elif action=="edit_off":
-        query.edit_message_reply_markup(reply_markup=build_tags_keyboard(False))
+        sorted_tags = sorted(list(tag_index))
+        buttons = []
 
-    elif action=="confirm_delete":
+        for t in sorted_tags:
+            buttons.append([
+                InlineKeyboardButton(t, callback_data=f"scene|{t}"),
+                InlineKeyboardButton("❌", callback_data=f"tags_confirm|{t}")
+            ])
 
-        buttons=[
-            [InlineKeyboardButton("✅ Yes", callback_data=f"delete|{value}")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="edit_on")]
-        ]
+        buttons.append([InlineKeyboardButton("✔ Done", callback_data="tags_done")])
 
         query.edit_message_text(
-            f"Delete {value}?",
+            f"{BOT_VERSION}\n\n🧠 Tag Library (edit mode)",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    elif action=="delete":
+    elif action=="tags_done":
+
+        sorted_tags = sorted(list(tag_index))
+        buttons = []
+        row = []
+
+        for t in sorted_tags:
+            row.append(InlineKeyboardButton(t, callback_data=f"scene|{t}"))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+
+        if row:
+            buttons.append(row)
+
+        buttons.append([InlineKeyboardButton("✏ Edit", callback_data="tags_edit")])
+
+        query.edit_message_text(
+            f"{BOT_VERSION}\n\n🧠 Tag Library",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif action=="tags_confirm":
+
+        buttons = [
+            [InlineKeyboardButton("✅ Delete", callback_data=f"tags_delete|{value}")],
+            [InlineKeyboardButton("Cancel", callback_data="tags_edit")]
+        ]
+
+        query.edit_message_text(
+            f"Delete '{value}'?",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+    elif action=="tags_delete":
 
         if value in tag_index:
             tag_index.remove(value)
 
+        sorted_tags = sorted(list(tag_index))
+        buttons = []
+
+        for t in sorted_tags:
+            buttons.append([
+                InlineKeyboardButton(t, callback_data=f"scene|{t}"),
+                InlineKeyboardButton("❌", callback_data=f"tags_confirm|{t}")
+            ])
+
+        buttons.append([InlineKeyboardButton("✔ Done", callback_data="tags_done")])
+
         query.edit_message_text(
-            f"{BOT_VERSION}\n\n🧠 Tag Library",
-            reply_markup=build_tags_keyboard(True)
+            f"{BOT_VERSION}\n\n🧠 Tag Library (edit mode)",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
+
+    elif action=="build":
+        query.edit_message_text(f"📀 Building {value} playlist…")
+
+        data=lastfm("tag.gettopartists",tag=value,limit=50)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
+        tracks=select_tracks(names)
+
+        query.message.reply_text(
+            f"📀 {value} ({len(tracks)} tracks)\n\n" + "\n".join(tracks)
+        )
+
+    elif action=="back":
+        artist_query = scene_memory.get(query.message.chat.id)
+        if artist_query:
+            context.args = [artist_query]
+            fake_update = type('', (), {})()
+            fake_update.message = query.message
+            fake_update.effective_chat = query.message.chat
+            scene(fake_update, context)
 
 # -------- TELEGRAM --------
 
@@ -243,8 +395,13 @@ updater=Updater(TELEGRAM_TOKEN)
 dp=updater.dispatcher
 
 dp.add_handler(CommandHandler("start",start))
-dp.add_handler(CommandHandler("tags",tags))
+dp.add_handler(CommandHandler("help",help_command))
+dp.add_handler(CommandHandler("playlist",playlist))
 dp.add_handler(CommandHandler("scene",scene))
+dp.add_handler(CommandHandler("tags",tags))
+dp.add_handler(CommandHandler("dig",dig))
+dp.add_handler(CommandHandler("trail",trail))
+dp.add_handler(CommandHandler("rare",rare))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
 print(BOT_VERSION)
