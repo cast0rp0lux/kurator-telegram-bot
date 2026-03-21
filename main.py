@@ -6,7 +6,7 @@ from urllib.parse import quote
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4.4)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v2.4.3)"
 
 LASTFM_USER = "burbq"
 LASTFM_API = os.environ["LASTFM_API_KEY"]
@@ -122,7 +122,39 @@ Tap a command to begin:
 
     update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
-# -------- TAGS NUEVO --------
+# -------- HELP --------
+
+def help_command(update,context):
+    msg = """❓ Help
+
+📀 /playlist  
+Playlist by Kurator
+
+🕳️ /dig  
+Deep discovery
+
+🔗 /trail <artist>  
+Explore similar artists
+
+🧠 /scene <artist>  
+Navigate styles and subgenres
+
+🧠 /tags  
+Explore collected genres
+
+🧪 /rare  
+Hidden artists
+
+
+Kurator is built around taste, not algorithms.
+
+Some responses may take a few seconds — multiple sources are working to build something actually worth listening to.
+
+Just be patient.
+"""
+    update.message.reply_text(msg)
+
+# -------- TAGS (NUEVO) --------
 
 def tags(update, context):
 
@@ -140,6 +172,54 @@ def tags(update, context):
         f"{BOT_VERSION}\n\n🧠 Tag Library\n\n" + "\n".join(sorted_tags[:50]),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
+
+# -------- PLAYLIST --------
+
+def playlist(update,context):
+
+    if context.args:
+        tag=" ".join(context.args)
+        update.message.reply_text(f"📀 Building {tag} playlist…")
+        data=lastfm("tag.gettopartists",tag=tag,limit=50)
+        names=[a["name"] for a in data.get("topartists",{}).get("artist",[])]
+        tracks=select_tracks(names)
+        send_playlist_with_export(update, tracks, f"📀 {tag}")
+
+    else:
+        update.message.reply_text("📀 Building playlist…")
+        tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
+        send_playlist_with_export(update, tracks)
+
+# -------- DIG --------
+
+def dig(update,context):
+    update.message.reply_text("🕳️ Digging deep…")
+    tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
+    send_playlist_with_export(update, tracks, "🕳️ Dig")
+
+# -------- TRAIL --------
+
+def trail(update,context):
+
+    if not context.args:
+        update.message.reply_text("🔗 Trail\n\nType:\n/trail <artist>")
+        return
+
+    update.message.reply_text("🔗 Following trail…")
+
+    artist=" ".join(context.args)
+    data=lastfm("artist.getsimilar",artist=artist,limit=60)
+    names=[a["name"] for a in data.get("similarartists",{}).get("artist",[])]
+    tracks=select_tracks(names)
+
+    send_playlist_with_export(update, tracks, f"🔗 {artist}")
+
+# -------- RARE --------
+
+def rare(update,context):
+    update.message.reply_text("🧪 Searching rare artists…")
+    tracks=select_tracks(expand_artist_graph(extract_seed_artists()))
+    send_playlist_with_export(update, tracks, "🧪 Rare")
 
 # -------- SCENE --------
 
@@ -165,9 +245,8 @@ def scene(update,context):
     for rel in releases:
         for s in rel.get("style", []):
             counter[s]=counter.get(s,0)+1
-            tag_index.add(s)  # 🔥 AQUÍ SE GUARDAN
+            tag_index.add(s)
         for g in rel.get("genre", []):
-            counter[g]=counter.get(g,0)+1
             tag_index.add(g)
 
     sorted_items=sorted(counter.items(),key=lambda x:x[1],reverse=True)
@@ -229,8 +308,19 @@ def handle_buttons(update,context):
 ━━━━━━━━━━━━━━━━━━━
 🎧 Export options
 ━━━━━━━━━━━━━━━━━━━
+
+🔹 Soundiiz (recommended)
+1. Go to https://soundiiz.com
+2. Import → Text
+3. Paste this list
+4. Export to your preferred platform
+
+🔹 Spotify quick access
+Tap any track below
 """
+
         buttons = [[InlineKeyboardButton(t[:50], url=spotify_search_url(t))] for t in tracks]
+
         query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
     elif action=="back":
@@ -242,7 +332,7 @@ def handle_buttons(update,context):
             fake_update.effective_chat = query.message.chat
             scene(fake_update, context)
 
-# -------- REGISTRO --------
+# -------- TELEGRAM --------
 
 updater=Updater(TELEGRAM_TOKEN)
 dp=updater.dispatcher
@@ -251,7 +341,7 @@ dp.add_handler(CommandHandler("start",start))
 dp.add_handler(CommandHandler("help",help_command))
 dp.add_handler(CommandHandler("playlist",playlist))
 dp.add_handler(CommandHandler("scene",scene))
-dp.add_handler(CommandHandler("tags",tags))  # 🔥
+dp.add_handler(CommandHandler("tags",tags))
 dp.add_handler(CommandHandler("dig",dig))
 dp.add_handler(CommandHandler("trail",trail))
 dp.add_handler(CommandHandler("rare",rare))
