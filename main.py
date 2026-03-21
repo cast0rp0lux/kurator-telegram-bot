@@ -11,15 +11,15 @@ import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, CommandHandler, Updater
 
-# ─── Logging (#25) ────────────────────────────────────────────────────────────
+# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.INFO
 )
 log = logging.getLogger(__name__)
 
-# ─── Version (#24) ────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v3.0.0)"
+# ─── Version ──────────────────────────────────────────────────────────────────
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v3.1.0)"
 
 LASTFM_USER    = "burbq"
 LASTFM_API     = os.environ["LASTFM_API_KEY"]
@@ -31,17 +31,15 @@ SEED_ARTISTS       = 25
 SIMILAR_EXPANSION  = 40
 PLAYLIST_SIZE      = 30
 RARE_MAX_LISTENERS = 500_000
-DIG_MIN_LISTENERS  = 50_000   # (#2, #9) dig now has a real range
-DIG_MAX_LISTENERS  = 500_000
-TAGS_PAGE_SIZE     = 24       # (#21) pagination
+TAGS_PAGE_SIZE     = 24
 
 HISTORY_FILE   = "history.json"
 TAG_INDEX_FILE = "tag_index.json"
 SCENE_FILE     = "scene_memory.json"
 
-CACHE_TTL = 600  # seconds (#8)
+CACHE_TTL = 600  # seconds
 
-# ─── Simple in-memory cache (#8, #9) ──────────────────────────────────────────
+# ─── Simple in-memory cache ───────────────────────────────────────────────────
 _cache = {}
 
 def cache_get(key):
@@ -53,7 +51,7 @@ def cache_get(key):
 def cache_set(key, value):
     _cache[key] = {"value": value, "ts": time.time()}
 
-# ─── JSON helpers ──────────────────────────────────────────────────────────────
+# ─── JSON helpers ─────────────────────────────────────────────────────────────
 
 def load_json(path, default):
     if os.path.exists(path):
@@ -68,7 +66,7 @@ def save_json(path, data):
     with open(path, "w") as f:
         json.dump(data, f)
 
-# ─── Persistent history (#4: by track, not artist) ────────────────────────────
+# ─── Persistent history (by track) ───────────────────────────────────────────
 
 def load_history():
     d = load_json(HISTORY_FILE, {})
@@ -79,7 +77,7 @@ def save_history():
 
 history = load_history()
 
-# ─── Persistent tag_index + scene_memory (#5) ─────────────────────────────────
+# ─── Persistent tag_index + scene_memory ─────────────────────────────────────
 
 tag_index = load_json(TAG_INDEX_FILE, {})
 
@@ -110,7 +108,6 @@ def normalize(name):
     return name.lower().strip()
 
 def get_recent_tracks():
-    # (#9) cache recent tracks for the session
     cached = cache_get("recent_tracks")
     if cached is not None:
         return cached
@@ -127,38 +124,76 @@ def extract_seed_artists():
             counter[artist] += 1
     return [a for a, _ in counter.most_common(SEED_ARTISTS)]
 
-def _fetch_similar(artist, max_listeners=None, min_listeners=None):
-    """Single artist similarity fetch — designed to run in parallel (#6)."""
-    data = lastfm("artist.getsimilar", artist=artist, limit=SIMILAR_EXPANSION)
-    result = []
-    for s in data.get("similarartists", {}).get("artist", []):
-        listeners = int(s.get("listeners", 0))
-        if max_listeners and listeners > max_listeners:
-            continue
-        if min_listeners and listeners < min_listeners:
-            continue
-        result.append(s["name"])
-    return result
+# ─── Artist graph expansion ───────────────────────────────────────────────────
 
-def expand_artist_graph(seed_artists, max_listeners=None, min_listeners=None):
-    """Parallel expansion (#6) + optional listener range (#3, #10)."""
+def _fetch_similar_names(artist):
+    """Returns list of similar artist names. No listener filter — API doesn't provide it here."""
+    data = lastfm("artist.getsimilar", artist=artist, limit=SIMILAR_EXPANSION)
+    return [s["name"] for s in data.get("similarartists", {}).get("artist", [])]
+
+def _fetch_listeners(artist):
+    """Returns (artist, listeners) using artist.getinfo — the only reliable source."""
+    data = lastfm("artist.getinfo", artist=artist)
+    try:
+        listeners = int(data["artist"]["stats"]["listeners"])
+    except (KeyError, ValueError):
+        listeners = 0
+    return artist, listeners
+
+def expand_artist_graph(seed_artists):
+    """Level-1 expansion: similar artists of seeds."""
     pool = set()
     with ThreadPoolExecutor(max_workers=8) as ex:
-        futures = {
-            ex.submit(_fetch_similar, a, max_listeners, min_listeners): a
-            for a in seed_artists
-        }
+        futures = [ex.submit(_fetch_similar_names, a) for a in seed_artists]
         for f in as_completed(futures):
             try:
                 pool.update(f.result())
             except Exception as e:
-                log.error(f"expand_artist_graph error: {e}")
+                log.error(f"expand_artist_graph L1 error: {e}")
     return list(pool)
 
+def expand_artist_graph_deep(seed_artists):
+    """
+    Level-2 expansion for /dig: similar of similar.
+    Naturally surfaces less mainstream artists without needing listener data.
+    """
+    level1 = expand_artist_graph(seed_artists)
+    sample = random.sample(level1, min(len(level1), 30))
+    pool   = set(level1)
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = [ex.submit(_fetch_similar_names, a) for a in sample]
+        for f in as_completed(futures):
+            try:
+                pool.update(f.result())
+            except Exception as e:
+                log.error(f"expand_artist_graph L2 error: {e}")
+    for s in seed_artists:
+        pool.discard(s)
+    return list(pool)
+
+def expand_artist_graph_rare(seed_artists):
+    """
+    Level-1 expansion then listener filter via artist.getinfo.
+    This is the correct way — getsimilar doesn't return listener counts.
+    """
+    candidates = expand_artist_graph(seed_artists)
+    filtered   = []
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = [ex.submit(_fetch_listeners, a) for a in candidates]
+        for f in as_completed(futures):
+            try:
+                artist, listeners = f.result()
+                if listeners < RARE_MAX_LISTENERS:
+                    filtered.append(artist)
+            except Exception as e:
+                log.error(f"expand_artist_graph_rare error: {e}")
+    return filtered
+
+# ─── Track selection ──────────────────────────────────────────────────────────
+
 def _fetch_top_track(artist):
-    """Single artist top track fetch — designed to run in parallel (#7)."""
     data = lastfm("artist.gettoptracks", artist=artist, limit=10)
-    top = data.get("toptracks", {}).get("track", [])
+    top  = data.get("toptracks", {}).get("track", [])
     random.shuffle(top)
     for t in top:
         key = f"{normalize(artist)}-{normalize(t['name'])}"
@@ -167,8 +202,7 @@ def _fetch_top_track(artist):
     return None
 
 def select_tracks(artists):
-    """Parallel track selection (#7). Filters by track, not artist (#4)."""
-    tracks = []
+    tracks     = []
     keys_added = set()
     random.shuffle(artists)
     candidates = artists[:PLAYLIST_SIZE * 4]
@@ -192,18 +226,22 @@ def select_tracks(artists):
     save_history()
     return tracks
 
+# ─── Spotify store ────────────────────────────────────────────────────────────
 
-# Temporary store for Spotify track lists (keyed by short id)
 _spotify_store = {}
 
 def _store_tracks(tracks):
-    """Save tracks and return a short key to reference them in a callback."""
-    key = str(int(time.time()))[-6:]  # 6-digit timestamp suffix, lightweight
+    key = str(int(time.time()))[-6:]
     _spotify_store[key] = tracks
     return key
 
-def send_playlist(message, tracks, title="📀 Playlist"):
-    """(#1) Guard for empty list. Clean output: plain Soundiiz link + single Spotify button."""
+# ─── Playlist sender ──────────────────────────────────────────────────────────
+
+def send_playlist(message, tracks, title="✦ Kurator's Pick", branded=True):
+    """
+    branded=True  → Kurator's editorial tone  (playlist, dig, rare)
+    branded=False → neutral/explore tone      (trail, scene/build, tag search)
+    """
     if not tracks:
         message.reply_text(
             f"{title}\n\n"
@@ -211,35 +249,38 @@ def send_playlist(message, tracks, title="📀 Playlist"):
             "Your history may be exhausted. Use /reset to start fresh.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔄 Reset history", callback_data="cmd|reset"),
-                InlineKeyboardButton("⬅ Menu", callback_data="cmd|menu")
+                InlineKeyboardButton("⬅ Menu",          callback_data="cmd|menu"),
             ]])
         )
         return
 
     track_list = "\n".join(tracks)
-    key = _store_tracks(tracks)
+    key        = _store_tracks(tracks)
+    subtitle   = "✦ Selected from Kurator's collection" if branded else "🔍 Open discovery"
 
-    # Single clean message: track list + Soundiiz link (no block, just the URL)
     message.reply_text(
-        f"{title} ({len(tracks)} tracks)\n\n"
+        f"{title} — {len(tracks)} tracks\n"
+        f"{subtitle}\n\n"
         f"{track_list}\n\n"
-        f"📤 Export to any platform via https://soundiiz.com",
+        f"📤 Export via https://soundiiz.com",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎧 Open tracks in Spotify", callback_data=f"spotify|{key}")],
-            [InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")],
+            [InlineKeyboardButton("⬅ Main menu",               callback_data="cmd|menu")],
         ])
     )
 
-# ─── Main menu (#15: context in button labels) ────────────────────────────────
+# ─── Main menu — Kurator's Picks / Explore ────────────────────────────────────
 
 def main_menu_markup():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📀 Playlist — from your taste",       callback_data="cmd|playlist")],
-        [InlineKeyboardButton("🕳️ Dig — deeper, less mainstream",   callback_data="cmd|dig")],
-        [InlineKeyboardButton("🔗 Trail — follow an artist",         callback_data="cmd|trail_prompt")],
-        [InlineKeyboardButton("🧠 Scene — map styles via Discogs",   callback_data="cmd|scene_prompt")],
-        [InlineKeyboardButton("🏷️ Tags — explore collected genres", callback_data="cmd|tags")],
-        [InlineKeyboardButton("🧪 Rare — hidden artists (<500K)",    callback_data="cmd|rare")],
+        [InlineKeyboardButton("── ✦ KURATOR'S PICKS ──────────────", callback_data="noop")],
+        [InlineKeyboardButton("📀 Playlist — Kurator's selection",    callback_data="cmd|playlist")],
+        [InlineKeyboardButton("🕳️ Dig — Deeper into Kurator's taste", callback_data="cmd|dig")],
+        [InlineKeyboardButton("🧪 Rare — Kurator's hidden gems",      callback_data="cmd|rare")],
+        [InlineKeyboardButton("── 🔍 EXPLORE ──────────────────────", callback_data="noop")],
+        [InlineKeyboardButton("🔗 Trail — Follow an artist",           callback_data="cmd|trail_prompt")],
+        [InlineKeyboardButton("🧠 Scene — Map styles via Discogs",     callback_data="cmd|scene_prompt")],
+        [InlineKeyboardButton("🏷️ Tags — Browse collected genres",    callback_data="cmd|tags")],
         [
             InlineKeyboardButton("📊 Status", callback_data="cmd|status"),
             InlineKeyboardButton("🔄 Reset",  callback_data="cmd|reset"),
@@ -247,38 +288,45 @@ def main_menu_markup():
         ],
     ])
 
-# ─── Help text (#12: /playlist <tag> documented) ──────────────────────────────
+# ─── Help text ────────────────────────────────────────────────────────────────
 
 def _help_text():
     return """❓ Help
 
-📀 /playlist [tag]
-Curated from your Last.fm history.
-Tip: add a genre tag → /playlist jazz
+✦ KURATOR'S PICKS
+Selections drawn from Kurator's own listening history.
+
+📀 /playlist
+Hand-picked by Kurator from his collection.
 
 🕳️ /dig
-Deep discovery — artists between 50K–500K listeners
-
-🔗 /trail <artist>
-Explore artists similar to one you name
-
-🧠 /scene <artist>
-Navigate styles and subgenres via Discogs
-
-🏷️ /tags
-Browse all genres collected across /scene calls
+Deeper cuts — two degrees of separation from Kurator's taste.
 
 🧪 /rare
-Hidden artists under 500K listeners
+Kurator's hidden gems — artists under 500K listeners.
 
-📊 /status
-See your history and tag stats
+🔍 EXPLORE
+Open-ended discovery tools — not tied to Kurator's taste.
 
-🔄 /reset
-Clear history and start fresh
+🔗 /trail <artist>
+Follow artists similar to one you name.
+
+🧠 /scene <artist>
+Map styles and subgenres via Discogs.
+
+🏷️ /tags
+Browse all genres collected across /scene calls.
+
+📀 /playlist <tag>
+Top artists for any genre tag (e.g. /playlist jazz).
+
+📊 /status — Your history and tag stats.
+🔄 /reset  — Clear history and start fresh.
 
 Kurator is built around taste, not algorithms.
-Some responses may take a few seconds — be patient.
+Some responses may take a few seconds.
+
+be patient.
 """
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
@@ -296,39 +344,31 @@ def playlist(update, context):
     msg = update.message
     if context.args:
         tag = " ".join(context.args)
-        msg.reply_text(f"📀 Building {tag} playlist…")
-        data = lastfm("tag.gettopartists", tag=tag, limit=50)
+        msg.reply_text(f"🔍 Searching top artists for \"{tag}\"…")
+        data  = lastfm("tag.gettopartists", tag=tag, limit=50)
         names = [a["name"] for a in data.get("topartists", {}).get("artist", [])]
-        send_playlist(msg, select_tracks(names), f"📀 {tag}")
+        send_playlist(msg, select_tracks(names), title=f"🔍 {tag}", branded=False)
     else:
-        # (#16) intermediate progress messages
-        msg.reply_text("📀 Building playlist…\n⏳ Fetching your listening history…")
+        msg.reply_text("📀 Kurator is selecting tracks for you… ⏳")
         seeds = extract_seed_artists()
-        msg.reply_text("🔍 Expanding artist graph…")
-        send_playlist(msg, select_tracks(expand_artist_graph(seeds)))
+        msg.reply_text("🔍 Expanding the collection…")
+        send_playlist(msg, select_tracks(expand_artist_graph(seeds)),
+                      title="✦ Kurator's Pick", branded=True)
 
 def dig(update, context):
-    # (#2) dig now has a real listener range (50K–500K)
     msg = update.message
-    msg.reply_text("🕳️ Digging deep…\n⏳ Fetching your listening history…")
+    msg.reply_text("🕳️ Going deeper into Kurator's taste… ⏳")
     seeds = extract_seed_artists()
-    msg.reply_text("🔍 Searching less mainstream artists…")
-    send_playlist(
-        msg,
-        select_tracks(expand_artist_graph(seeds, min_listeners=DIG_MIN_LISTENERS, max_listeners=DIG_MAX_LISTENERS)),
-        "🕳️ Dig"
-    )
+    msg.reply_text("🔍 Mapping two degrees of separation…")
+    send_playlist(msg, select_tracks(expand_artist_graph_deep(seeds)),
+                  title="✦ Kurator's Dig", branded=True)
 
 def rare(update, context):
-    # (#3) seed artists themselves are not pre-filtered, but pool is capped at <500K
     msg = update.message
-    msg.reply_text("🧪 Searching rare artists…\n⏳ This may take a moment…")
+    msg.reply_text("🧪 Searching Kurator's hidden gems… ⏳\nThis may take a moment.")
     seeds = extract_seed_artists()
-    send_playlist(
-        msg,
-        select_tracks(expand_artist_graph(seeds, max_listeners=RARE_MAX_LISTENERS)),
-        "🧪 Rare"
-    )
+    send_playlist(msg, select_tracks(expand_artist_graph_rare(seeds)),
+                  title="✦ Kurator's Rare", branded=True)
 
 def trail(update, context):
     msg = update.message
@@ -337,10 +377,9 @@ def trail(update, context):
         return
     artist = " ".join(context.args)
     msg.reply_text(f"🔗 Following trail from {artist}…")
-    data = lastfm("artist.getsimilar", artist=artist, limit=60)
+    data  = lastfm("artist.getsimilar", artist=artist, limit=60)
     names = [a["name"] for a in data.get("similarartists", {}).get("artist", [])]
-    send_playlist(msg, select_tracks(names), f"🔗 {artist}")
-    # (#11) back button is now included inside send_playlist
+    send_playlist(msg, select_tracks(names), title=f"🔗 {artist}", branded=False)
 
 def scene(update, context):
     msg = update.message
@@ -360,13 +399,14 @@ def status(update, context):
 def reset(update, context):
     _do_reset(update.message)
 
-# ─── Scene renderer (#19: removed BOT_VERSION from scene) ─────────────────────
+# ─── Scene renderer ───────────────────────────────────────────────────────────
 
 def _render_scene(message, artist_query, chat_id):
     try:
         data = requests.get(
             "https://api.discogs.com/database/search",
-            params={"artist": artist_query, "type": "release", "per_page": 100, "token": DISCOGS_TOKEN},
+            params={"artist": artist_query, "type": "release",
+                    "per_page": 100, "token": DISCOGS_TOKEN},
             timeout=15
         ).json()
     except Exception as e:
@@ -382,11 +422,11 @@ def _render_scene(message, artist_query, chat_id):
         for g in rel.get("genre", []):
             tag_index[g] = tag_index.get(g, 0) + 1
 
-    save_tag_index()  # (#5)
+    save_tag_index()
 
     sorted_styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:15]
     scene_memory[chat_id] = {"artist": artist_query, "styles": sorted_styles}
-    save_scene_memory()  # (#5)
+    save_scene_memory()
 
     if not sorted_styles:
         message.reply_text(f'🧠 No styles found for "{artist_query}".')
@@ -398,21 +438,20 @@ def _render_scene(message, artist_query, chat_id):
     ]
     buttons.append([InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")])
 
-    # (#19) BOT_VERSION removed from here
     message.reply_text(
         f"🧠 {artist_query}\n\nChoose a style:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# ─── Tags renderer — paginated (#21), deduplicated (#23) ──────────────────────
+# ─── Tags renderer — paginated ────────────────────────────────────────────────
 
 def _build_tags_buttons(sorted_tags, page):
-    start = page * TAGS_PAGE_SIZE
-    end   = start + TAGS_PAGE_SIZE
+    start     = page * TAGS_PAGE_SIZE
+    end       = start + TAGS_PAGE_SIZE
     page_tags = sorted_tags[start:end]
 
     buttons = []
-    row = []
+    row     = []
     for tag, count in page_tags:
         row.append(InlineKeyboardButton(f"{tag} ({count})", callback_data=f"scene_style|{tag}"))
         if len(row) == 2:
@@ -433,26 +472,24 @@ def _build_tags_buttons(sorted_tags, page):
     return buttons
 
 def _render_tags(message, page=0):
-    """(#23) Single function used by both /tags command and callback."""
     if not tag_index:
         message.reply_text(
             "No tags collected yet.\n\nUse /scene <artist> first to start building your tag library."
         )
         return
 
-    sorted_tags  = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
-    total_pages  = max(1, (len(sorted_tags) - 1) // TAGS_PAGE_SIZE + 1)
-    start        = page * TAGS_PAGE_SIZE
-    page_tags    = sorted_tags[start:start + TAGS_PAGE_SIZE]
-    tag_list     = "\n".join(f"• {tag}  ×{count}" for tag, count in page_tags)
-    buttons      = _build_tags_buttons(sorted_tags, page)
+    sorted_tags = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+    total_pages = max(1, (len(sorted_tags) - 1) // TAGS_PAGE_SIZE + 1)
+    start       = page * TAGS_PAGE_SIZE
+    page_tags   = sorted_tags[start:start + TAGS_PAGE_SIZE]
+    tag_list    = "\n".join(f"• {tag}  ×{count}" for tag, count in page_tags)
 
     message.reply_text(
         f"🏷️ Tag Library — {len(sorted_tags)} genres (page {page + 1}/{total_pages})\n\n{tag_list}",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page))
     )
 
-# ─── Status + Reset (#13, #14) ────────────────────────────────────────────────
+# ─── Status + Reset ───────────────────────────────────────────────────────────
 
 def _render_status(message):
     message.reply_text(
@@ -489,8 +526,12 @@ def handle_buttons(update, context):
     action  = parts[0]
     value   = parts[1] if len(parts) > 1 else ""
 
+    # ── noop (section header buttons — do nothing) ─────────────────────────────
+    if action == "noop":
+        return
+
     # ── cmd actions ────────────────────────────────────────────────────────────
-    if action == "cmd":
+    elif action == "cmd":
 
         if value == "menu":
             query.edit_message_text(
@@ -499,27 +540,22 @@ def handle_buttons(update, context):
             )
 
         elif value == "playlist":
-            query.edit_message_text("📀 Building playlist… ⏳")
+            query.edit_message_text("📀 Kurator is selecting tracks… ⏳")
             seeds = extract_seed_artists()
-            send_playlist(message, select_tracks(expand_artist_graph(seeds)))
+            send_playlist(message, select_tracks(expand_artist_graph(seeds)),
+                          title="✦ Kurator's Pick", branded=True)
 
         elif value == "dig":
-            query.edit_message_text("🕳️ Digging deep… ⏳")
+            query.edit_message_text("🕳️ Going deeper into Kurator's taste… ⏳")
             seeds = extract_seed_artists()
-            send_playlist(
-                message,
-                select_tracks(expand_artist_graph(seeds, min_listeners=DIG_MIN_LISTENERS, max_listeners=DIG_MAX_LISTENERS)),
-                "🕳️ Dig"
-            )
+            send_playlist(message, select_tracks(expand_artist_graph_deep(seeds)),
+                          title="✦ Kurator's Dig", branded=True)
 
         elif value == "rare":
-            query.edit_message_text("🧪 Searching rare artists… ⏳")
+            query.edit_message_text("🧪 Searching Kurator's hidden gems… ⏳")
             seeds = extract_seed_artists()
-            send_playlist(
-                message,
-                select_tracks(expand_artist_graph(seeds, max_listeners=RARE_MAX_LISTENERS)),
-                "🧪 Rare"
-            )
+            send_playlist(message, select_tracks(expand_artist_graph_rare(seeds)),
+                          title="✦ Kurator's Rare", branded=True)
 
         elif value == "trail_prompt":
             query.edit_message_text("🔗 Trail\n\nSend:\n/trail <artist>")
@@ -528,7 +564,6 @@ def handle_buttons(update, context):
             query.edit_message_text("🧠 Scene\n\nSend:\n/scene <artist>")
 
         elif value == "tags":
-            # (#23) reuse _build_tags_buttons; no duplicated logic
             if not tag_index:
                 query.edit_message_text(
                     "No tags yet.\n\nUse /scene <artist> first.",
@@ -576,7 +611,7 @@ def handle_buttons(update, context):
                 ]])
             )
 
-    # ── tags pagination (#21) ──────────────────────────────────────────────────
+    # ── tags pagination ────────────────────────────────────────────────────────
     elif action == "tags_page":
         page        = int(value)
         sorted_tags = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
@@ -589,7 +624,7 @@ def handle_buttons(update, context):
             reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page))
         )
 
-    # ── scene_style (#20: back label capped at 25 chars) ──────────────────────
+    # ── scene_style ───────────────────────────────────────────────────────────
     elif action == "scene_style":
         mem    = scene_memory.get(chat_id, {})
         artist = mem.get("artist", "")
@@ -642,12 +677,12 @@ def handle_buttons(update, context):
         buttons.append([InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")])
         query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(buttons))
 
-    # ── build ─────────────────────────────────────────────────────────────────
+    # ── build: playlist from scene style (Explore) ────────────────────────────
     elif action == "build":
-        query.edit_message_text(f"📀 Building {value} playlist… ⏳")
+        query.edit_message_text(f"🔍 Building {value} playlist… ⏳")
         data  = lastfm("tag.gettopartists", tag=value, limit=50)
         names = [a["name"] for a in data.get("topartists", {}).get("artist", [])]
-        send_playlist(message, select_tracks(names), f"📀 {value}")
+        send_playlist(message, select_tracks(names), title=f"🔍 {value}", branded=False)
 
 # ─── Boot ─────────────────────────────────────────────────────────────────────
 
@@ -662,8 +697,8 @@ dp.add_handler(CommandHandler("tags",     tags))
 dp.add_handler(CommandHandler("dig",      dig))
 dp.add_handler(CommandHandler("trail",    trail))
 dp.add_handler(CommandHandler("rare",     rare))
-dp.add_handler(CommandHandler("status",   status))   # (#14)
-dp.add_handler(CommandHandler("reset",    reset))    # (#13)
+dp.add_handler(CommandHandler("status",   status))
+dp.add_handler(CommandHandler("reset",    reset))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
 log.info(BOT_VERSION)
