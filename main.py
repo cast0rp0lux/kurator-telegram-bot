@@ -154,7 +154,7 @@ Just be patient.
 """
     update.message.reply_text(msg)
 
-# -------- TAGS (NUEVO) --------
+# -------- TAGS (MODIFICADO) --------
 
 def tags(update, context):
 
@@ -166,10 +166,13 @@ def tags(update, context):
 
     buttons = []
     for t in sorted_tags[:50]:
-        buttons.append([InlineKeyboardButton(t, callback_data=f"scene|{t}")])
+        buttons.append([
+            InlineKeyboardButton(t, callback_data=f"scene|{t}"),
+            InlineKeyboardButton("❌", callback_data=f"delete|{t}")
+        ])
 
     update.message.reply_text(
-        f"{BOT_VERSION}\n\n🧠 Tag Library\n\n" + "\n".join(sorted_tags[:50]),
+        f"{BOT_VERSION}\n\n🧠 Tag Library",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -322,6 +325,25 @@ Tap any track below
         buttons = [[InlineKeyboardButton(t[:50], url=spotify_search_url(t))] for t in tracks]
 
         query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif action=="delete":
+
+        if value in tag_index:
+            tag_index.remove(value)
+
+        sorted_tags = sorted(list(tag_index))
+
+        buttons = []
+        for t in sorted_tags[:50]:
+            buttons.append([
+                InlineKeyboardButton(t, callback_data=f"scene|{t}"),
+                InlineKeyboardButton("❌", callback_data=f"delete|{t}")
+            ])
+
+        query.edit_message_text(
+            f"{BOT_VERSION}\n\n🧠 Tag Library",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
 
     elif action=="back":
         artist_query = scene_memory.get(query.message.chat.id)
