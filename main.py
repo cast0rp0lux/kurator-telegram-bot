@@ -3,6 +3,8 @@ import json
 import logging
 import random
 import time
+import tempfile
+import itertools
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
@@ -19,19 +21,22 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v3.1.0)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v3.2.0)"
 
 LASTFM_USER    = "burbq"
 LASTFM_API     = os.environ["LASTFM_API_KEY"]
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 DISCOGS_TOKEN  = os.environ["DISCOGS_TOKEN"]
 
-SCROBBLE_LIMIT     = 600
-SEED_ARTISTS       = 25
-SIMILAR_EXPANSION  = 40
-PLAYLIST_SIZE      = 30
-RARE_MAX_LISTENERS = 500_000
-TAGS_PAGE_SIZE     = 24
+SCROBBLE_LIMIT        = 600
+SEED_ARTISTS          = 25
+SIMILAR_EXPANSION     = 40
+PLAYLIST_SIZE         = 30
+RARE_MAX_LISTENERS    = 500_000
+RARE_CANDIDATE_CAP    = 150    # FIX #5: cap before listener lookups
+TAGS_PAGE_SIZE        = 24
+CALLBACK_DATA_MAX     = 60     # FIX #9: Telegram limit is 64, stay safe
+SPOTIFY_STORE_MAX     = 20     # FIX #8: max entries in _spotify_store
 
 HISTORY_FILE   = "history.json"
 TAG_INDEX_FILE = "tag_index.json"
@@ -51,7 +56,7 @@ def cache_get(key):
 def cache_set(key, value):
     _cache[key] = {"value": value, "ts": time.time()}
 
-# ─── JSON helpers ─────────────────────────────────────────────────────────────
+# ─── JSON helpers — atomic write (#4) ────────────────────────────────────────
 
 def load_json(path, default):
     if os.path.exists(path):
@@ -63,8 +68,15 @@ def load_json(path, default):
     return default
 
 def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f)
+    """Atomic write: write to temp file then rename. Prevents corruption on crash."""
+    dir_ = os.path.dirname(os.path.abspath(path))
+    try:
+        fd, tmp = tempfile.mkstemp(dir=dir_)
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except Exception as e:
+        log.error(f"save_json failed for {path}: {e}")
 
 # ─── Persistent history (by track) ───────────────────────────────────────────
 
@@ -81,7 +93,7 @@ history = load_history()
 
 tag_index = load_json(TAG_INDEX_FILE, {})
 
-_scene_raw = load_json(SCENE_FILE, {})
+_scene_raw   = load_json(SCENE_FILE, {})
 scene_memory = {int(k): v for k, v in _scene_raw.items()}
 
 def save_tag_index():
@@ -96,9 +108,13 @@ def spotify_url(track):
     return f"https://open.spotify.com/search/{quote(track)}"
 
 def lastfm(method, **params):
+    """FIX #2: https. FIX #3: check status code."""
     payload = {"method": method, "api_key": LASTFM_API, "format": "json", **params}
     try:
-        r = requests.get("http://ws.audioscrobbler.com/2.0/", params=payload, timeout=10)
+        r = requests.get("https://ws.audioscrobbler.com/2.0/", params=payload, timeout=10)
+        if r.status_code != 200:
+            log.warning(f"Last.fm {method} returned HTTP {r.status_code}")
+            return {}
         return r.json()
     except Exception as e:
         log.error(f"Last.fm error ({method}): {e}")
@@ -107,11 +123,18 @@ def lastfm(method, **params):
 def normalize(name):
     return name.lower().strip()
 
+def safe_callback(value, prefix=""):
+    """FIX #9: ensure callback_data stays under Telegram's 64-byte limit."""
+    full = f"{prefix}{value}" if prefix else value
+    if len(full.encode("utf-8")) > CALLBACK_DATA_MAX:
+        full = full.encode("utf-8")[:CALLBACK_DATA_MAX].decode("utf-8", errors="ignore")
+    return full
+
 def get_recent_tracks():
     cached = cache_get("recent_tracks")
     if cached is not None:
         return cached
-    data = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=SCROBBLE_LIMIT)
+    data   = lastfm("user.getrecenttracks", user=LASTFM_USER, limit=SCROBBLE_LIMIT)
     tracks = data.get("recenttracks", {}).get("track", [])
     cache_set("recent_tracks", tracks)
     return tracks
@@ -127,12 +150,10 @@ def extract_seed_artists():
 # ─── Artist graph expansion ───────────────────────────────────────────────────
 
 def _fetch_similar_names(artist):
-    """Returns list of similar artist names. No listener filter — API doesn't provide it here."""
     data = lastfm("artist.getsimilar", artist=artist, limit=SIMILAR_EXPANSION)
     return [s["name"] for s in data.get("similarartists", {}).get("artist", [])]
 
 def _fetch_listeners(artist):
-    """Returns (artist, listeners) using artist.getinfo — the only reliable source."""
     data = lastfm("artist.getinfo", artist=artist)
     try:
         listeners = int(data["artist"]["stats"]["listeners"])
@@ -141,7 +162,7 @@ def _fetch_listeners(artist):
     return artist, listeners
 
 def expand_artist_graph(seed_artists):
-    """Level-1 expansion: similar artists of seeds."""
+    """Level-1: similar artists of seeds."""
     pool = set()
     with ThreadPoolExecutor(max_workers=8) as ex:
         futures = [ex.submit(_fetch_similar_names, a) for a in seed_artists]
@@ -149,44 +170,47 @@ def expand_artist_graph(seed_artists):
             try:
                 pool.update(f.result())
             except Exception as e:
-                log.error(f"expand_artist_graph L1 error: {e}")
+                log.error(f"expand L1 error: {e}")
     return list(pool)
 
 def expand_artist_graph_deep(seed_artists):
     """
-    Level-2 expansion for /dig: similar of similar.
-    Naturally surfaces less mainstream artists without needing listener data.
+    FIX #6: Level-2 only — excludes level-1 artists from result.
+    /dig now returns genuinely different artists from /playlist.
     """
-    level1 = expand_artist_graph(seed_artists)
-    sample = random.sample(level1, min(len(level1), 30))
-    pool   = set(level1)
+    level1 = set(expand_artist_graph(seed_artists))
+    sample = random.sample(list(level1), min(len(level1), 30))
+    level2 = set()
     with ThreadPoolExecutor(max_workers=8) as ex:
         futures = [ex.submit(_fetch_similar_names, a) for a in sample]
         for f in as_completed(futures):
             try:
-                pool.update(f.result())
+                level2.update(f.result())
             except Exception as e:
-                log.error(f"expand_artist_graph L2 error: {e}")
-    for s in seed_artists:
-        pool.discard(s)
-    return list(pool)
+                log.error(f"expand L2 error: {e}")
+    # Return only pure level-2: exclude seeds AND level-1
+    result = level2 - level1 - set(seed_artists)
+    return list(result)
 
 def expand_artist_graph_rare(seed_artists):
     """
-    Level-1 expansion then listener filter via artist.getinfo.
-    This is the correct way — getsimilar doesn't return listener counts.
+    FIX #5: cap candidates before firing listener lookups.
+    Prevents hammering Last.fm with hundreds of getinfo calls.
     """
     candidates = expand_artist_graph(seed_artists)
-    filtered   = []
+    if len(candidates) > RARE_CANDIDATE_CAP:
+        candidates = random.sample(candidates, RARE_CANDIDATE_CAP)
+
+    filtered = []
     with ThreadPoolExecutor(max_workers=10) as ex:
         futures = [ex.submit(_fetch_listeners, a) for a in candidates]
         for f in as_completed(futures):
             try:
                 artist, listeners = f.result()
-                if listeners < RARE_MAX_LISTENERS:
+                if 0 < listeners < RARE_MAX_LISTENERS:
                     filtered.append(artist)
             except Exception as e:
-                log.error(f"expand_artist_graph_rare error: {e}")
+                log.error(f"expand_rare error: {e}")
     return filtered
 
 # ─── Track selection ──────────────────────────────────────────────────────────
@@ -202,6 +226,7 @@ def _fetch_top_track(artist):
     return None
 
 def select_tracks(artists):
+    """FIX #7: warn user if pool is small and playlist comes out short."""
     tracks     = []
     keys_added = set()
     random.shuffle(artists)
@@ -226,22 +251,25 @@ def select_tracks(artists):
     save_history()
     return tracks
 
-# ─── Spotify store ────────────────────────────────────────────────────────────
+# ─── Spotify store — bounded (#8) ─────────────────────────────────────────────
 
-_spotify_store = {}
+_spotify_store  = {}
+_spotify_counter = itertools.count()
 
 def _store_tracks(tracks):
-    key = str(int(time.time()))[-6:]
+    """FIX #1: unique key via counter. FIX #8: evict oldest when full."""
+    key = str(next(_spotify_counter))
     _spotify_store[key] = tracks
+    # Evict oldest entries if over limit
+    if len(_spotify_store) > SPOTIFY_STORE_MAX:
+        oldest = sorted(_spotify_store.keys(), key=lambda k: int(k))
+        for old in oldest[:len(_spotify_store) - SPOTIFY_STORE_MAX]:
+            del _spotify_store[old]
     return key
 
 # ─── Playlist sender ──────────────────────────────────────────────────────────
 
 def send_playlist(message, tracks, title="✦ Kurator's Pick", branded=True):
-    """
-    branded=True  → Kurator's editorial tone  (playlist, dig, rare)
-    branded=False → neutral/explore tone      (trail, scene/build, tag search)
-    """
     if not tracks:
         message.reply_text(
             f"{title}\n\n"
@@ -254,15 +282,20 @@ def send_playlist(message, tracks, title="✦ Kurator's Pick", branded=True):
         )
         return
 
+    # FIX #7: soft warning if playlist came out shorter than expected
+    short_warning = ""
+    if len(tracks) < PLAYLIST_SIZE * 0.7:
+        short_warning = f"\n⚠️ Only {len(tracks)} tracks found — history may be getting full. /reset to refresh.\n"
+
     track_list = "\n".join(tracks)
     key        = _store_tracks(tracks)
     subtitle   = "✦ Selected from Kurator's collection" if branded else "🔍 Open discovery"
 
     message.reply_text(
         f"{title} — {len(tracks)} tracks\n"
-        f"{subtitle}\n\n"
+        f"{subtitle}{short_warning}\n\n"
         f"{track_list}\n\n"
-        f"Import plain text at soundiiz.com",
+        "Import plain text at soundiiz.com",
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎧 Open tracks in Spotify", callback_data=f"spotify|{key}")],
@@ -270,7 +303,7 @@ def send_playlist(message, tracks, title="✦ Kurator's Pick", branded=True):
         ])
     )
 
-# ─── Main menu — Kurator's Picks / Explore ────────────────────────────────────
+# ─── Main menu ────────────────────────────────────────────────────────────────
 
 def main_menu_markup():
     return InlineKeyboardMarkup([
@@ -301,13 +334,13 @@ Selections drawn from Kurator's own listening history.
 Hand-picked by Kurator from his collection.
 
 🕳️ /dig
-Deeper cuts — two degrees of separation from Kurator's taste.
+Deeper cuts — two degrees from Kurator's taste.
 
 🧪 /rare
 Kurator's hidden gems — artists under 500K listeners.
 
 🔍 EXPLORE
-Open-ended discovery tools — not tied to Kurator's taste.
+Open-ended discovery — not tied to Kurator's taste.
 
 🔗 /trail <artist>
 Follow artists similar to one you name.
@@ -321,13 +354,11 @@ Browse all genres collected across /scene calls.
 📀 /playlist <tag>
 Top artists for any genre tag (e.g. /playlist jazz).
 
-📊 /status — Your history and tag stats.
+📊 /status — History and tag stats.
 🔄 /reset  — Clear history and start fresh.
 
 Kurator is built around taste, not algorithms.
-Some responses may take a few seconds.
-
-Be patient.
+Some responses may take a few seconds. Be patient.
 """
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
@@ -426,17 +457,20 @@ def _render_scene(message, artist_query, chat_id):
     save_tag_index()
 
     sorted_styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:15]
-    scene_memory[chat_id] = {"artist": artist_query, "styles": sorted_styles}
-    save_scene_memory()
 
+    # FIX #10: guard BEFORE saving to scene_memory
     if not sorted_styles:
         message.reply_text(f'🧠 No styles found for "{artist_query}".')
         return
 
-    buttons = [
-        [InlineKeyboardButton(f"{style}  ({count})", callback_data=f"scene_style|{style}")]
-        for style, count in sorted_styles
-    ]
+    scene_memory[chat_id] = {"artist": artist_query, "styles": sorted_styles}
+    save_scene_memory()
+
+    # FIX #9: validate callback_data length for each style button
+    buttons = []
+    for style, count in sorted_styles:
+        cb = safe_callback(f"scene_style|{style}")
+        buttons.append([InlineKeyboardButton(f"{style}  ({count})", callback_data=cb)])
     buttons.append([InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")])
 
     message.reply_text(
@@ -454,7 +488,9 @@ def _build_tags_buttons(sorted_tags, page):
     buttons = []
     row     = []
     for tag, count in page_tags:
-        row.append(InlineKeyboardButton(f"{tag} ({count})", callback_data=f"scene_style|{tag}"))
+        # FIX #9: validate callback_data length
+        cb = safe_callback(f"scene_style|{tag}")
+        row.append(InlineKeyboardButton(f"{tag} ({count})", callback_data=cb))
         if len(row) == 2:
             buttons.append(row)
             row = []
@@ -519,20 +555,21 @@ def _do_reset(message):
 
 def handle_buttons(update, context):
     query   = update.callback_query
-    query.answer()
-
     chat_id = query.message.chat.id
     message = query.message
     parts   = query.data.split("|", 1)
     action  = parts[0]
     value   = parts[1] if len(parts) > 1 else ""
 
-    # ── noop (section header buttons — do nothing) ─────────────────────────────
+    # FIX #13: answer noop immediately and exit — no spinner
     if action == "noop":
+        query.answer()
         return
 
+    query.answer()
+
     # ── cmd actions ────────────────────────────────────────────────────────────
-    elif action == "cmd":
+    if action == "cmd":
 
         if value == "menu":
             query.edit_message_text(
@@ -655,7 +692,7 @@ def handle_buttons(update, context):
             return
 
         buttons = [
-            [InlineKeyboardButton(f"{style}  ({count})", callback_data=f"scene_style|{style}")]
+            [InlineKeyboardButton(f"{style}  ({count})", callback_data=safe_callback(f"scene_style|{style}"))]
             for style, count in styles
         ]
         buttons.append([InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")])
@@ -678,7 +715,7 @@ def handle_buttons(update, context):
         buttons.append([InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")])
         query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(buttons))
 
-    # ── build: playlist from scene style (Explore) ────────────────────────────
+    # ── build: playlist from scene style ─────────────────────────────────────
     elif action == "build":
         query.edit_message_text(f"🔍 Building {value} playlist… ⏳")
         data  = lastfm("tag.gettopartists", tag=value, limit=50)
