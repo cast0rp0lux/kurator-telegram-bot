@@ -246,7 +246,7 @@ def _render_scene(message, artist_query, chat_id):
     scene_memory[chat_id] = {"artist": artist_query, "styles": sorted_styles}
 
     if not sorted_styles:
-        message.reply_text(f"🧠 No styles found for "{artist_query}".")
+        message.reply_text(f'🧠 No styles found for "{artist_query}".')
         return
 
     buttons = [
