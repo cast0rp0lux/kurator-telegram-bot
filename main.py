@@ -12,7 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote, urlencode
 
 import requests
-from flask import Flask, request as flask_request
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, CommandHandler, Updater
 
@@ -258,67 +259,85 @@ def spotify_build_playlist(chat_id, tracks, title):
     spotify_add_tracks(token, playlist_id, uris)
     return playlist_url
 
-# ─── Flask OAuth callback server ──────────────────────────────────────────────
+# ─── OAuth callback server — stdlib only, no Flask ───────────────────────────
 
-flask_app = Flask(__name__)
-_bot_ref   = None  # set after Updater is created
+_bot_ref = None  # set after Updater is created
 
-@flask_app.route("/callback/spotify")
-def spotify_callback():
-    code  = flask_request.args.get("code")
-    state = flask_request.args.get("state")
-    error = flask_request.args.get("error")
+class _OAuthHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # suppress default HTTP logs
 
-    chat_id = _pending_auth.pop(state, None)
-    if not chat_id:
-        return "❌ Invalid or expired session. Please try /connect again.", 400
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path != "/callback/spotify":
+            self._respond(404, "Not found")
+            return
 
-    if error or not code:
-        if _bot_ref:
-            _bot_ref.send_message(chat_id, "❌ Spotify authorization cancelled.")
-        return "Authorization cancelled.", 400
+        params  = parse_qs(parsed.query)
+        code    = params.get("code",  [None])[0]
+        state   = params.get("state", [None])[0]
+        error   = params.get("error", [None])[0]
 
-    # Exchange code for tokens
-    try:
-        r = requests.post(
-            "https://accounts.spotify.com/api/token",
-            data={
-                "grant_type":   "authorization_code",
-                "code":         code,
-                "redirect_uri": SPOTIFY_REDIRECT_URI,
-            },
-            auth=(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET),
-            timeout=10
-        )
-        d = r.json()
-        if "access_token" not in d:
-            raise ValueError(d)
+        chat_id = _pending_auth.pop(state, None)
+        if not chat_id:
+            self._respond(400, "❌ Invalid or expired session. Try /connect again.")
+            return
 
-        _spotify_tokens[str(chat_id)] = {
-            "access_token":  d["access_token"],
-            "refresh_token": d["refresh_token"],
-            "expires_at":    time.time() + d["expires_in"],
-        }
-        save_spotify_tokens()
+        if error or not code:
+            if _bot_ref:
+                _bot_ref.send_message(chat_id, "❌ Spotify authorization cancelled.")
+            self._respond(400, "Authorization cancelled.")
+            return
 
-        if _bot_ref:
-            _bot_ref.send_message(
-                chat_id,
-                "✅ Spotify connected!\n\nYour next playlists will be created directly in your account.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")
-                ]])
+        # Exchange code for tokens
+        try:
+            r = requests.post(
+                "https://accounts.spotify.com/api/token",
+                data={
+                    "grant_type":   "authorization_code",
+                    "code":         code,
+                    "redirect_uri": SPOTIFY_REDIRECT_URI,
+                },
+                auth=(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET),
+                timeout=10
             )
-        return "<h2>✅ Kurator connected to Spotify!</h2><p>You can close this tab.</p>"
+            d = r.json()
+            if "access_token" not in d:
+                raise ValueError(d)
 
-    except Exception as e:
-        log.error(f"Spotify token exchange error: {e}")
-        if _bot_ref:
-            _bot_ref.send_message(chat_id, "❌ Spotify connection failed. Try /connect again.")
-        return "Connection failed.", 500
+            _spotify_tokens[str(chat_id)] = {
+                "access_token":  d["access_token"],
+                "refresh_token": d["refresh_token"],
+                "expires_at":    time.time() + d["expires_in"],
+            }
+            save_spotify_tokens()
 
-def _run_flask():
-    flask_app.run(host="0.0.0.0", port=CALLBACK_PORT, use_reloader=False)
+            if _bot_ref:
+                _bot_ref.send_message(
+                    chat_id,
+                    "✅ Spotify connected!\n\nYour next playlists will be created directly in your account.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")
+                    ]])
+                )
+            self._respond(200, "<h2>✅ Kurator connected to Spotify!</h2><p>You can close this tab.</p>")
+
+        except Exception as e:
+            log.error(f"Spotify token exchange error: {e}")
+            if _bot_ref:
+                _bot_ref.send_message(chat_id, "❌ Spotify connection failed. Try /connect again.")
+            self._respond(500, "Connection failed.")
+
+    def _respond(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
+
+def _run_http_server():
+    server = HTTPServer(("0.0.0.0", CALLBACK_PORT), _OAuthHandler)
+    log.info(f"OAuth server listening on port {CALLBACK_PORT}")
+    server.serve_forever()
 
 # ─── Last.fm helpers ──────────────────────────────────────────────────────────
 
@@ -327,15 +346,15 @@ def spotify_url(track):
 
 def lastfm(method, **params):
     payload = {"method": method, "api_key": LASTFM_API, "format": "json", **params}
-    try:
-        r = requests.get("https://ws.audioscrobbler.com/2.0/", params=payload, timeout=10)
-        if r.status_code != 200:
+    for attempt in range(2):
+        try:
+            r = requests.get("https://ws.audioscrobbler.com/2.0/", params=payload, timeout=20)
+            if r.status_code == 200:
+                return r.json()
             log.warning(f"Last.fm {method} returned HTTP {r.status_code}")
-            return {}
-        return r.json()
-    except Exception as e:
-        log.error(f"Last.fm error ({method}): {e}")
-        return {}
+        except Exception as e:
+            log.error(f"Last.fm error ({method}) attempt {attempt+1}: {e}")
+    return {}
 
 def normalize(name):
     return name.lower().strip()
@@ -1064,9 +1083,8 @@ dp.add_handler(CommandHandler("connect",     connect))
 dp.add_handler(CommandHandler("disconnect",  disconnect_spotify))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
-# Start Flask in background thread
-threading.Thread(target=_run_flask, daemon=True).start()
-log.info(f"Flask OAuth server running on port {CALLBACK_PORT}")
+# Start OAuth HTTP server in background thread
+threading.Thread(target=_run_http_server, daemon=True).start()
 
 log.info(BOT_VERSION)
 print(BOT_VERSION)
