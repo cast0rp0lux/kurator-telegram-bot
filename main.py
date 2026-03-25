@@ -195,6 +195,12 @@ def spotify_get_user_id(token):
             headers={"Authorization": f"Bearer {token}"},
             timeout=8
         )
+        if r.status_code != 200:
+            log.error(f"Spotify get user HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        if not r.content:
+            log.error("Spotify get user: empty response body")
+            return None
         return r.json().get("id")
     except Exception as e:
         log.error(f"Spotify get user error: {e}")
@@ -617,6 +623,7 @@ def connect(update, context):
         "redirect_uri":  SPOTIFY_REDIRECT_URI,
         "scope":         SPOTIFY_SCOPES,
         "state":         state,
+        "show_dialog":   "true",  # always show login, even if already authorized
     }
     auth_url = "https://accounts.spotify.com/authorize?" + urlencode(params)
 
@@ -632,7 +639,7 @@ def disconnect_spotify(update, context):
     chat_id = str(update.effective_chat.id)
     if chat_id in _spotify_tokens:
         del _spotify_tokens[chat_id]
-        save_spotify_tokens()
+        save_spotify_tokens()  # persist the deletion to disk
         update.message.reply_text("✅ Spotify disconnected.")
     else:
         update.message.reply_text("You don't have a Spotify account connected.")
