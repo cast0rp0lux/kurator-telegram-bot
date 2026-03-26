@@ -25,7 +25,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v3.4.3)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v3.4.4)"
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -295,7 +295,7 @@ class _OAuthHandler(BaseHTTPRequestHandler):
 
         if error or not code:
             if _bot_ref:
-                _bot_ref.send_message(chat_id, "❌ Spotify authorization cancelled.")
+                _bot_ref.send_message(chat_id, "Spotify authorization cancelled.")
             self._respond(400, "Authorization cancelled.")
             return
 
@@ -325,17 +325,17 @@ class _OAuthHandler(BaseHTTPRequestHandler):
             if _bot_ref:
                 _bot_ref.send_message(
                     chat_id,
-                    "✅ Spotify connected!\n\nYour next playlists will be created directly in your account.",
+                    "Spotify connected.\n\nYour next playlists will be created directly in your account.",
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")
                     ]])
                 )
-            self._respond(200, "<h2>✅ Kurator connected to Spotify!</h2><p>You can close this tab.</p>")
+            self._respond(200, "<h2>Kurator × Spotify</h2><p>Connected. You can close this tab.</p>")
 
         except Exception as e:
             log.error(f"Spotify token exchange error: {e}")
             if _bot_ref:
-                _bot_ref.send_message(chat_id, "❌ Spotify connection failed. Try /connect again.")
+                _bot_ref.send_message(chat_id, "Spotify connection failed. Try /connect again.")
             self._respond(500, "Connection failed.")
 
     def _respond(self, code, body):
@@ -522,18 +522,18 @@ def send_playlist(message, tracks, title="✦ Kurator's Pick", branded=True, cha
     if not tracks:
         message.reply_text(
             f"{title}\n\n"
-            "⚠️ No new tracks found.\n\n"
-            "Your history may be exhausted. Use /reset to start fresh.",
+            "No new tracks found.\n\n"
+            "Your history may be full.\nUse /reset to start fresh.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Reset history", callback_data="cmd|reset"),
-                InlineKeyboardButton("⬅ Menu",          callback_data="cmd|menu"),
+                InlineKeyboardButton("🗑️ Reset", callback_data="cmd|reset"),
+                InlineKeyboardButton("⬅ Menu",  callback_data="cmd|menu"),
             ]])
         )
         return
 
     short_warning = ""
     if len(tracks) < PLAYLIST_SIZE * 0.7:
-        short_warning = f"\n⚠️ Only {len(tracks)} tracks found — history filling up. /reset to refresh.\n"
+        short_warning = f"\nOnly {len(tracks)} tracks found — history is getting full. /reset to refresh.\n"
 
     key        = _store_tracks(tracks)
     track_list = "\n".join(tracks)
@@ -549,12 +549,16 @@ def send_playlist(message, tracks, title="✦ Kurator's Pick", branded=True, cha
     # Try to create Spotify playlist if user is connected
     spotify_url_playlist = None
     if chat_id and get_spotify_token(chat_id):
-        message.reply_text("🎧 Creating your Spotify playlist…")
+        message.reply_text("Creating your Spotify playlist…")
         spotify_url_playlist = spotify_build_playlist(chat_id, tracks, title)
         if spotify_url_playlist:
             log.info(f"Spotify playlist created: {spotify_url_playlist}")
         else:
             log.warning(f"Spotify playlist creation failed for chat_id {chat_id}")
+            message.reply_text(
+                "Playlist creation needs Spotify Premium.\n\n"
+                "You can still export via Soundiiz or browse track links below."
+            )
 
     # Export options message — separate, navigable
     message.reply_text(
@@ -587,35 +591,33 @@ def main_menu_markup():
 # ─── Help text ────────────────────────────────────────────────────────────────
 
 def _help_text():
-    return """❓ Help
+    return """Kurator is built around taste, not algorithms.
 
 ✦ KURATOR'S PICKS
-Selections drawn from Kurator's own listening history.
+Selections from Kurator's own listening history.
 
-📀 /playlist — Hand-picked by Kurator.
-⛏️ /dig — Two degrees from Kurator's taste.
-💎 /rare — Hidden gems under 500K listeners.
+📀 /playlist — Kurator's cut
+⛏️ /dig — Two degrees from Kurator's taste
+💎 /rare — Artists under 500K listeners
 
 🔍 EXPLORE
-Open-ended discovery — not tied to Kurator's taste.
+Open-ended discovery tools.
 
-🧬 /trail <artist> — Follow an artist's DNA.
-🌐 /scene <artist> — Map styles via Discogs.
-🗂️ /tags — Browse collected genres.
+🧬 /trail <artist> — Follow an artist's DNA
+🌐 /scene <artist> — Map styles via Discogs
+🗂️ /tags — Browse collected genres
 📀 /playlist <tag> — e.g. /playlist jazz
 
-🔗 /connect — Link your Spotify account.
-📊 /status — History and tag stats.
-🗑️ /reset  — Clear history and start fresh.
-
-Kurator is built around taste, not algorithms.
+/connect — Link your Spotify account
+/status — History and tag stats
+/reset — Clear history and start fresh
 """
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
 def start(update, context):
     update.message.reply_text(
-        f"{BOT_VERSION}\n\nTap a command to begin:",
+        f"{BOT_VERSION}\n\nTap a command to begin.",
         reply_markup=main_menu_markup()
     )
 
@@ -643,10 +645,13 @@ def connect(update, context):
     auth_url = "https://accounts.spotify.com/authorize?" + urlencode(params)
 
     update.message.reply_text(
-        "🎧 Connect your Spotify account to Kurator.\n\n"
-        "Tap the button below, authorize, and your playlists will be created directly in your account.",
+        "Kurator × Spotify\n\n"
+        "Connect your account and playlists will be created automatically — ready to play in one tap.\n\n"
+        "Playlist creation requires Spotify Premium.\n"
+        "No Premium? You can still export via Soundiiz or browse tracks one by one.",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔗 Connect Spotify", url=auth_url)
+            InlineKeyboardButton("🔗 Connect Spotify", url=auth_url),
+            InlineKeyboardButton("⬅ Back", callback_data="cmd|menu"),
         ]])
     )
 
@@ -655,9 +660,9 @@ def disconnect_spotify(update, context):
     if chat_id in _spotify_tokens:
         del _spotify_tokens[chat_id]
         save_spotify_tokens()  # persist the deletion to disk
-        update.message.reply_text("✅ Spotify disconnected.")
+        update.message.reply_text("Spotify disconnected.")
     else:
-        update.message.reply_text("You don't have a Spotify account connected.")
+        update.message.reply_text("No Spotify account connected.")
 
 def playlist(update, context):
     msg     = update.message
@@ -671,25 +676,25 @@ def playlist(update, context):
         random.shuffle(names)
         send_playlist(msg, select_tracks(names), title=f"🔍 {tag}", branded=False, chat_id=chat_id)
     else:
-        msg.reply_text("📀 Kurator is selecting tracks for you… ⏳")
+        msg.reply_text("📀 Selecting tracks…")
         seeds = extract_seed_artists()
-        msg.reply_text("🔍 Expanding the collection…")
+        msg.reply_text("Expanding the collection…")
         send_playlist(msg, select_tracks(expand_artist_graph(seeds)),
                       title="✦ Kurator's Pick", branded=True, chat_id=chat_id)
 
 def dig(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
-    msg.reply_text("⛏️ Going deeper into Kurator's taste… ⏳")
+    msg.reply_text("⛏️ Digging deeper…")
     seeds = extract_seed_artists()
-    msg.reply_text("🔍 Mapping two degrees of separation…")
+    msg.reply_text("Mapping two degrees of separation…")
     send_playlist(msg, select_tracks(expand_artist_graph_deep(seeds)),
                   title="✦ Kurator's Dig", branded=True, chat_id=chat_id)
 
 def rare(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
-    msg.reply_text("💎 Searching Kurator's hidden gems… ⏳\nThis may take a moment.")
+    msg.reply_text("💎 Searching for hidden gems…")
     seeds = extract_seed_artists()
     send_playlist(msg, select_tracks(expand_artist_graph_rare(seeds)),
                   title="✦ Kurator's Rare", branded=True, chat_id=chat_id)
@@ -698,10 +703,10 @@ def trail(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     if not context.args:
-        msg.reply_text("🧬 Trail\n\nType:\n/trail <artist>")
+        msg.reply_text("🧬 Trail\n\nSend: /trail <artist>")
         return
     artist = " ".join(context.args)
-    msg.reply_text(f"🧬 Following trail from {artist}…")
+    msg.reply_text(f"🧬 Following the trail…")
     data  = lastfm("artist.getsimilar", artist=artist, limit=60)
     names = [a["name"] for a in data.get("similarartists", {}).get("artist", [])]
     send_playlist(msg, select_tracks(names), title=f"🧬 {artist}", branded=False, chat_id=chat_id)
@@ -709,10 +714,10 @@ def trail(update, context):
 def scene(update, context):
     msg = update.message
     if not context.args:
-        msg.reply_text("🌐 Scene\n\nType:\n/scene <artist>")
+        msg.reply_text("🌐 Scene\n\nSend: /scene <artist>")
         return
     artist_query = " ".join(context.args)
-    msg.reply_text("🌐 Mapping scene…")
+    msg.reply_text("🌐 Mapping the scene…")
     _render_scene(msg, artist_query, update.effective_chat.id)
 
 def tags(update, context):
@@ -736,7 +741,7 @@ def _render_scene(message, artist_query, chat_id):
         ).json()
     except Exception as e:
         log.error(f"Discogs error: {e}")
-        message.reply_text("⚠️ Discogs request failed. Try again.")
+        message.reply_text("Discogs request failed. Try again.")
         return
 
     counter = {}
@@ -751,7 +756,7 @@ def _render_scene(message, artist_query, chat_id):
     sorted_styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:15]
 
     if not sorted_styles:
-        message.reply_text(f'🌐 No styles found for "{artist_query}".')
+        message.reply_text(f'No styles found for "{artist_query}".\nTry a different artist or spelling.')
         return
 
     scene_memory[chat_id] = {"artist": artist_query, "styles": sorted_styles}
@@ -812,7 +817,7 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False):
 def _render_tags(message, page=0, edit_mode=False):
     if not tag_index:
         message.reply_text(
-            "No tags collected yet.\n\nUse /scene <artist> first to start building your tag library."
+            "No tags collected yet.\n\nUse /scene <artist> to start building your library."
         )
         return
 
@@ -831,14 +836,13 @@ def _render_tags(message, page=0, edit_mode=False):
 # ─── Status + Reset ───────────────────────────────────────────────────────────
 
 def _render_status(message, chat_id=None):
-    spotify_status = "✅ Connected" if (chat_id and get_spotify_token(chat_id)) else "❌ Not connected — /connect"
+    spotify_status = "Connected" if (chat_id and get_spotify_token(chat_id)) else "Not connected — /connect"
     message.reply_text(
-        f"📊 Kurator Status\n\n"
-        f"🎵 Tracks in history: {len(history['tracks'])}\n"
-        f"🗂️ Tags collected: {len(tag_index)}\n"
-        f"🌐 Scene sessions: {len(scene_memory)}\n"
-        f"🎧 Spotify: {spotify_status}\n\n"
-        f"Use /reset to clear history and start fresh.",
+        f"📊 Status\n\n"
+        f"Tracks in history — {len(history['tracks'])}\n"
+        f"Tags collected — {len(tag_index)}\n"
+        f"Scene sessions — {len(scene_memory)}\n"
+        f"Spotify — {spotify_status}",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🗑️ Reset", callback_data="cmd|reset"),
             InlineKeyboardButton("⬅ Menu",  callback_data="cmd|menu"),
@@ -849,7 +853,7 @@ def _do_reset(message):
     history["tracks"].clear()
     save_history()
     message.reply_text(
-        "🗑️ History cleared!\n\nYou'll start seeing fresh artists and tracks again.",
+        "History cleared.\n\nFresh artists and tracks on your next request.",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")
         ]])
