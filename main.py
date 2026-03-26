@@ -181,9 +181,13 @@ def spotify_search_track_id(token, query):
             params={"q": query, "type": "track", "limit": 1},
             timeout=8
         )
+        if r.status_code != 200:
+            log.warning(f"Spotify search HTTP {r.status_code} for '{query}'")
+            return None
         items = r.json().get("tracks", {}).get("items", [])
         if items:
             return items[0]["uri"]
+        log.warning(f"Spotify search: no results for '{query}'")
     except Exception as e:
         log.error(f"Spotify search error for '{query}': {e}")
     return None
@@ -514,38 +518,49 @@ def send_playlist(message, tracks, title="✦ Kurator's Pick", branded=True, cha
     if len(tracks) < PLAYLIST_SIZE * 0.7:
         short_warning = f"\n⚠️ Only {len(tracks)} tracks found — history filling up. /reset to refresh.\n"
 
-    track_list = "\n".join(f"{i+1:02d}. {t}" for i, t in enumerate(tracks))
+    # FIX: no track numbers, plain "Artist - Track"
+    track_list = "\n".join(tracks)
     subtitle   = "✦ Selected from Kurator's collection" if branded else "🔍 Open discovery"
+    key        = _store_tracks(tracks)
+
+    # Send the plain text playlist first (copyable)
+    message.reply_text(
+        f"{title} — {len(tracks)} tracks\n"
+        f"{subtitle}{short_warning}\n\n"
+        f"{track_list}",
+        disable_web_page_preview=True,
+    )
 
     # Try to create Spotify playlist if user is connected
     spotify_url_playlist = None
     if chat_id and get_spotify_token(chat_id):
         message.reply_text("🎧 Creating your Spotify playlist…")
         spotify_url_playlist = spotify_build_playlist(chat_id, tracks, title)
+        if spotify_url_playlist:
+            log.info(f"Spotify playlist created: {spotify_url_playlist}")
+        else:
+            log.warning(f"Spotify playlist creation failed for chat_id {chat_id}")
 
-    key = _store_tracks(tracks)
-
-    # Build export buttons
+    # Build export buttons as a separate message below
     if spotify_url_playlist:
         export_buttons = [
             [InlineKeyboardButton("🎧 Open playlist in Spotify", url=spotify_url_playlist)],
-            [InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")],
+            [InlineKeyboardButton("📋 Copy plain text",           callback_data=f"copy_text|{key}")],
+            [InlineKeyboardButton("⬅ Main menu",                  callback_data="cmd|menu")],
         ]
     else:
         export_buttons = [
-            [InlineKeyboardButton("🎧 Expand in Spotify", callback_data=f"sp_expand|{key}")],
-            [InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")],
+            [InlineKeyboardButton("🎧 Open tracks in Spotify",    callback_data=f"sp_expand|{key}")],
+            [InlineKeyboardButton("📋 Copy plain text",           callback_data=f"copy_text|{key}")],
         ]
         if chat_id and not get_spotify_token(chat_id):
-            export_buttons.insert(1, [
+            export_buttons.append([
                 InlineKeyboardButton("🔗 Connect Spotify", callback_data="cmd|connect")
             ])
+        export_buttons.append([InlineKeyboardButton("⬅ Main menu", callback_data="cmd|menu")])
 
     message.reply_text(
-        f"{title} — {len(tracks)} tracks\n"
-        f"{subtitle}{short_warning}\n\n"
-        f"{track_list}\n\n"
-        "Import plain text at soundiiz.com",
+        "Export options:",
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup(export_buttons)
     )
@@ -860,7 +875,8 @@ def handle_buttons(update, context):
     if action == "cmd":
 
         if value == "menu":
-            query.edit_message_text(
+            # Send menu as new message so playlists above are preserved
+            message.reply_text(
                 f"{BOT_VERSION}\n\nTap a command to begin:",
                 reply_markup=main_menu_markup()
             )
@@ -1046,6 +1062,14 @@ def handle_buttons(update, context):
             f"🌐 {artist}\n\nChoose a style:",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
+
+    # ── copy_text: resend playlist as plain copyable text ─────────────────────
+    elif action == "copy_text":
+        tracks = _track_store.get(value, [])
+        if not tracks:
+            query.answer("Text expired. Generate a new playlist.", show_alert=True)
+            return
+        message.reply_text("\n".join(tracks), disable_web_page_preview=True)
 
     # ── sp_expand: expand individual Spotify search links (fallback) ──────────
     elif action == "sp_expand":
