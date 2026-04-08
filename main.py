@@ -22,7 +22,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator Lite 📀 Music Discovery Engine (v1.0)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v4.9.1)"
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -481,12 +481,23 @@ def _fetch_track_from_early_albums(artist, decade_years=None):
 
 def _fetch_top_track(artist):
     """
-    Fetch top track from Last.fm.
-    Lite: skip filter always disabled — no _fetch_listeners call, faster.
+    Fetch top track from Last.fm. For obscure artists (<100K listeners)
+    disables the TRACK_SKIP_TOP filter so their best track is always reachable.
     """
+    # Check if artist is obscure — skip the top-track skip for them
+    _, listeners = _fetch_listeners(artist)
+    is_obscure   = 0 < listeners < OBSCURE_LISTENER_THRESHOLD
+    if is_obscure:
+        log.info(f"Obscure artist '{artist}' ({listeners:,} listeners) — skip filter disabled")
+
     data = lastfm("artist.gettoptracks", artist=artist, limit=TRACK_FETCH_LIMIT)
     top  = data.get("toptracks", {}).get("track", [])
-    pool = top  # no skip filter in Lite
+
+    if is_obscure:
+        # Don't skip top tracks for obscure artists — any track is a discovery
+        pool = top
+    else:
+        pool = top[TRACK_SKIP_TOP:] or top
 
     filtered = [t for t in pool
                 if int(t.get("playcount", 0) or 0) < TRACK_PLAYCOUNT_MAX
@@ -502,7 +513,6 @@ def _fetch_top_track(artist):
     return None
 
 def select_tracks(artists, size=None, skip_recent=True):
-    """Lite: uses _fetch_top_track directly — no MB calls, fast."""
     global _recent_artists
     target     = size or PLAYLIST_SIZE
     tracks     = []
@@ -513,8 +523,8 @@ def select_tracks(artists, size=None, skip_recent=True):
                if not _is_blacklisted(a)
                and normalize(a) not in recent_set]
     random.shuffle(artists)
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        futures = [ex.submit(_fetch_top_track, a) for a in artists[:target * 4]]
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = [ex.submit(_fetch_track_from_early_albums, a) for a in artists[:target * 7]]
         for f in as_completed(futures):
             if len(tracks) >= target:
                 break
@@ -838,66 +848,7 @@ def _artist_matches_genre(artist, valid_genres):
     except Exception:
         return True
 
-def _get_genre_tracks_lite(genre, decades, size=50):
-    """
-    Lite: get tracks directly from tag.gettoptracks — single API call.
-    For era filtering, use Discogs artist pool as source of truth.
-    Returns list of "Artist - Track" strings ready to use.
-    """
-    # Get tracks directly from Last.fm tag
-    data   = lastfm("tag.gettoptracks", tag=genre, limit=200)
-    items  = data.get("tracks", {}).get("track", [])
-    if not items:
-        return []
-
-    # Extract artist-track pairs, filter by name quality
-    pairs = []
-    seen_artists = set()
-    for t in items:
-        artist_name = t.get("artist", {}).get("name", "") if isinstance(t.get("artist"), dict) else ""
-        track_name  = t.get("name", "")
-        if not artist_name or not track_name:
-            continue
-        if not _is_valid_artist_name(artist_name):
-            continue
-        if not _is_valid_fallback_track(artist_name, track_name):
-            continue
-        norm = normalize_artist(artist_name)
-        if norm in seen_artists:
-            continue
-        seen_artists.add(norm)
-        clean = _clean_track_title(track_name)
-        if clean.lower() not in SEASONAL_TRACK_BLACKLIST:
-            pairs.append((artist_name, clean))
-
-    log.info(f"tag.gettoptracks '{genre}': {len(pairs)} valid pairs")
-
-    random.shuffle(pairs)
-
-    # Filter out tracks already in history
-    tracks       = []
-    keys_added   = set()
-    artists_used = []
-    for artist, track_name in pairs:
-        if len(tracks) >= size:
-            break
-        key = f"{normalize(artist)}-{normalize(track_name)}"
-        if not track_in_history(key) and key not in keys_added:
-            tracks.append(f"{artist} - {track_name}")
-            keys_added.add(key)
-            artists_used.append(artist)
-
-    for key in keys_added:
-        add_to_history(key)
-    save_history()
-    global _recent_artists
-    _recent_artists.extend(artists_used)
-    _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
-
-    return tracks
-
-
-def _get_era_artists_from_lastfm(genre, decades, max_artists=80):
+def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
     """
     Seed-based artist discovery for genre playlists.
     1. Get top artists for the genre tag from Last.fm
@@ -941,9 +892,24 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=80):
 
     # Add seeds themselves to pool
     expanded.update(seeds)
-    pool = [a for a in expanded if _is_valid_artist_name(a)]
+    candidates = [a for a in expanded if _is_valid_artist_name(a)]
+    random.shuffle(candidates)
+
+    # Step 4: filter by genre tags — reject artists whose tags don't match genre
+    valid_genres = _get_valid_genres_for(genre)
+    pool = []
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {ex.submit(_artist_matches_genre, a, valid_genres): a for a in candidates}
+        for f in as_completed(futures):
+            artist = futures[f]
+            try:
+                if f.result():
+                    pool.append(artist)
+            except Exception:
+                pool.append(artist)  # benefit of the doubt
+
     random.shuffle(pool)
-    log.info(f"Genre '{genre}' pool: {len(pool)} artists from {len(seeds)} seeds")
+    log.info(f"Genre '{genre}' pool: {len(pool)}/{len(candidates)} passed genre filter")
     return pool[:max_artists]
 
 
@@ -1218,30 +1184,34 @@ def _safe_reply(message, text):
 
 def select_tracks_with_decades(artists, size=None, decades=None, message=None, mode="playlist", style_filter=None, use_mb=False, genre=None):
     """
-    Lite: Discogs for era pool, _fetch_top_track directly. No MB. No artist.getinfo.
+    When decades selected: use Discogs as source, ignore user history pool.
+    genre: if set and in GENRES_NEED_ERA, uses GENRE_TO_DISCOGS_STYLES for targeted search.
     """
     if not decades:
         return select_tracks(artists, size=size)
 
-    style_override = _resolve_genre_styles(genre, decades) if genre else None
+    # Resolve style_override from genre — always, even if not in map
+    style_override = None
     if genre:
+        style_override = _resolve_genre_styles(genre, decades)
         log.info(f"Genre '{genre}' → styles: {style_override}")
 
     if message:
         _safe_reply(message, "📅 Building era pool…")
 
     if mode == "dig":
-        seeds = _get_era_artists_from_discogs(decades, mode="dig", max_artists=60, style_override=style_override)
+        seeds = _get_era_artists_from_discogs(decades, mode="dig", max_artists=80, style_override=style_override)
         if message:
             _safe_reply(message, "🔗 Expanding connections…")
         pool = _expand_era_pool_dig(seeds)
         if len(pool) < 15:
             pool = seeds
-        if len(pool) > 150:
+        # Cap before verification
+        if len(pool) > 200:
             random.shuffle(pool)
-            pool = pool[:150]
+            pool = pool[:200]
     elif mode == "rare":
-        pool = _get_era_artists_from_discogs(decades, mode="rare", max_artists=80, style_override=style_override)
+        pool = _get_era_artists_from_discogs(decades, mode="rare", max_artists=120, style_override=style_override)
         if message:
             _safe_reply(message, "💎 Filtering for obscure artists…")
         rare_pool = []
@@ -1255,51 +1225,127 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
                 except Exception:
                     pass
         pool = rare_pool if rare_pool else pool[:20]
+        log.info(f"Rare era: {len(pool)} after listeners filter")
     else:
-        pool = _get_era_artists_from_discogs(decades, mode="playlist", max_artists=80, style_override=style_override)
+        pool = _get_era_artists_from_discogs(decades, mode="playlist", max_artists=100, style_override=style_override)
+
+    # Expand pool using genre graph if too small
+    if genre and len(pool) < 50:
+        log.info(f"Genre '{genre}' pool too small ({len(pool)}) — expanding to near genres")
+        for related in _expand_genre(genre, "near"):
+            if len(pool) >= 80:
+                break
+            rel_styles = _resolve_genre_styles(related, decades)
+            extra = _get_era_artists_from_discogs(decades, mode=mode,
+                                                   max_artists=40,
+                                                   style_override=rel_styles if rel_styles else [related.title()])
+            pool = list(set(pool) | set(extra))
+            log.info(f"After near '{related}': {len(pool)} artists")
+
+    if genre and len(pool) < 30:
+        log.info(f"Genre '{genre}' pool still small ({len(pool)}) — expanding to mid genres")
+        for related in _expand_genre(genre, "mid"):
+            if len(pool) >= 50:
+                break
+            rel_styles = _resolve_genre_styles(related, decades)
+            extra = _get_era_artists_from_discogs(decades, mode=mode,
+                                                   max_artists=30,
+                                                   style_override=rel_styles if rel_styles else [related.title()])
+            pool = list(set(pool) | set(extra))
+            log.info(f"After mid '{related}': {len(pool)} artists")
+
+    if genre and len(pool) < 15:
+        log.info(f"Genre '{genre}' pool very small ({len(pool)}) — expanding to far genres")
+        for related in _expand_genre(genre, "far"):
+            if len(pool) >= 30:
+                break
+            rel_styles = _resolve_genre_styles(related, decades)
+            extra = _get_era_artists_from_discogs(decades, mode=mode,
+                                                   max_artists=20,
+                                                   style_override=rel_styles if rel_styles else [related.title()])
+            pool = list(set(pool) | set(extra))
+            log.info(f"After far '{related}': {len(pool)} artists")
 
     if not pool:
         log.info("Era pool empty — falling back to user history pool")
         return select_tracks(artists, size=size)
 
-    log.info(f"Era pool ({mode}): {len(pool)} artists for {decades}")
-
+    # Verify artist names against Last.fm for track lookup compatibility
     if message:
         _safe_reply(message, "🎵 Selecting tracks…")
 
+    verified = []
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        def _check_artist(name):
+            try:
+                data = lastfm("artist.getinfo", artist=name)
+                lfm_name = data.get("artist", {}).get("name", "")
+                if lfm_name:
+                    return lfm_name
+            except Exception:
+                pass
+            return None
+
+        futures = {ex.submit(_check_artist, a): a for a in pool}
+        for f in as_completed(futures):
+            try:
+                result = f.result()
+                if result:
+                    verified.append(result)
+            except Exception:
+                pass
+
+    log.info(f"Era pool ({mode}): {len(pool)} → {len(verified)} verified for {decades}")
+
+    # No MB validation — Discogs is source of truth for era
+    final_pool = verified if len(verified) >= 10 else pool
+
+    # Compute decade year range for album filtering
+    decade_year_range = None
+    if decades:
+        lo = min(DECADE_YEARS[d][0] for d in decades)
+        hi = max(DECADE_YEARS[d][1] for d in decades)
+        decade_year_range = (lo, hi)
+
+    # Select tracks
     global _recent_artists
     target        = size or PLAYLIST_SIZE
     recent_set    = {normalize(r) for r in _recent_artists}
-    filtered_pool = [a for a in pool if normalize(a) not in recent_set]
+    filtered_pool = [a for a in final_pool if normalize(a) not in recent_set]
     if len(filtered_pool) < 10:
-        filtered_pool = pool
+        filtered_pool = final_pool
 
     random.shuffle(filtered_pool)
     tracks       = []
     keys_added   = set()
     seen_artists = set()
     artists_used = []
+    BATCH_SIZE   = 20  # submit in small batches, stop when target reached
 
-    # Lite: _fetch_top_track directly, no MB, 8 workers
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        futures = [ex.submit(_fetch_top_track, a) for a in filtered_pool[:target * 3]]
-        for f in as_completed(futures):
-            if len(tracks) >= target:
-                break
-            try:
-                result = f.result()
-                if result:
-                    artist, track_name, key = result
-                    artist_norm = normalize_artist(artist)
-                    if artist_norm in seen_artists:
-                        continue
-                    if not track_in_history(key) and key not in keys_added:
-                        tracks.append(f"{artist} - {track_name}")
-                        keys_added.add(key)
-                        seen_artists.add(artist_norm)
-                        artists_used.append(artist)
-            except Exception as e:
-                log.error(f"select_tracks_with_decades lite: {e}")
+    for i in range(0, min(len(filtered_pool), target * 4), BATCH_SIZE):
+        if len(tracks) >= target:
+            break
+        batch = filtered_pool[i:i + BATCH_SIZE]
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futures = [ex.submit(_fetch_track_from_early_albums, a, decade_year_range)
+                       for a in batch]
+            for f in as_completed(futures):
+                if len(tracks) >= target:
+                    break
+                try:
+                    result = f.result()
+                    if result:
+                        artist, track_name, key = result
+                        artist_norm = normalize_artist(artist)
+                        if artist_norm in seen_artists:
+                            continue
+                        if not track_in_history(key) and key not in keys_added:
+                            tracks.append(f"{artist} - {track_name}")
+                            keys_added.add(key)
+                            seen_artists.add(artist_norm)
+                            artists_used.append(artist)
+                except Exception as e:
+                    log.error(f"select_tracks_with_decades: {e}")
 
     for key in keys_added:
         add_to_history(key)
@@ -1488,7 +1534,7 @@ def _mb_get(path, params=None):
             with _mb_lock:
                 # Enforce 1 req/s globally across all threads
                 now = time.time()
-                wait = 0.8 - (now - _mb_last_call)
+                wait = 1.1 - (now - _mb_last_call)
                 if wait > 0:
                     time.sleep(wait)
                 _mb_last_call = time.time()
@@ -2415,7 +2461,6 @@ def handle_buttons(update, context):
 
         elif gen_action.startswith("build|"):
             style = gen_action.split("|", 1)[1]
-            global _recent_artists
 
             # Era always required for genres
             if not decades:
@@ -2430,51 +2475,80 @@ def handle_buttons(update, context):
                 return
 
             query.edit_message_text(f"🎸 Building {style.title()}{era_tag} playlist…")
-            sent, timer = _working_message(message, "🎸 Still building…", delay=30)
+            sent, timer = _working_message(message, "🎸 Still building…", delay=50)
 
-            # Lite genre path: Discogs era pool + _fetch_top_track directly (no MB)
-            style_override = _resolve_genre_styles(style, decades)
-            pool = _get_era_artists_from_discogs(decades, mode="playlist",
-                                                  max_artists=80,
-                                                  style_override=style_override)
+            # Use Last.fm as source for genre playlists — much better coverage than Discogs
+            lo = min(DECADE_YEARS[d][0] for d in decades)
+            hi = max(DECADE_YEARS[d][1] for d in decades)
+            decade_year_range = (lo, hi)
 
-            # Fallback to tag.gettoptracks if Discogs returns nothing (niche genres)
+            pool = _get_era_artists_from_lastfm(style, decades, max_artists=150)
+
             if not pool:
-                log.info(f"Discogs empty for '{style}' — using tag.gettoptracks")
-                tracks = _get_genre_tracks_lite(style, decades, size=GENRE_PLAYLIST_SIZE)
-            else:
-                random.shuffle(pool)
-                recent_set    = {normalize(r) for r in _recent_artists}
-                filtered_pool = [a for a in pool if normalize(a) not in recent_set] or pool
+                # Fallback to Discogs if Last.fm returns nothing
+                log.info(f"Last.fm pool empty for '{style}' — falling back to Discogs")
+                pool = _get_era_artists_from_discogs(decades, mode="playlist",
+                                                      max_artists=100,
+                                                      style_override=_resolve_genre_styles(style, decades))
 
-                tracks       = []
-                keys_added   = set()
-                seen_artists = set()
-                artists_used = []
+            random.shuffle(pool)
+            global _recent_artists
+            target        = GENRE_PLAYLIST_SIZE
+            recent_set    = {normalize(r) for r in _recent_artists}
+            filtered_pool = [a for a in pool if normalize(a) not in recent_set]
+            if len(filtered_pool) < 10:
+                filtered_pool = pool
 
-                with ThreadPoolExecutor(max_workers=8) as ex:
-                    futures = [ex.submit(_fetch_top_track, a) for a in filtered_pool[:GENRE_PLAYLIST_SIZE * 3]]
+            # Dynamic fallback ratio based on pool size
+            pool_size      = len(filtered_pool)
+            max_fallback   = int(target * 0.3) if pool_size < 40 else int(target * 0.5)
+            min_listeners  = 500 if pool_size < 40 else 0
+            log.info(f"Pool size: {pool_size} — max_fallback: {max_fallback}, min_listeners: {min_listeners}")
+
+            tracks       = []
+            keys_added   = set()
+            seen_artists = set()
+            artists_used = []
+            fallback_count = 0
+
+            BATCH_SIZE = 20
+            for i in range(0, min(len(filtered_pool), target * 4), BATCH_SIZE):
+                if len(tracks) >= target:
+                    break
+                batch = filtered_pool[i:i + BATCH_SIZE]
+                with ThreadPoolExecutor(max_workers=4) as ex:
+                    futures = [ex.submit(_fetch_track_for_genre, a, decade_year_range, min_listeners)
+                               for a in batch]
                     for f in as_completed(futures):
-                        if len(tracks) >= GENRE_PLAYLIST_SIZE:
+                        if len(tracks) >= target:
                             break
                         try:
                             result = f.result()
                             if result:
                                 artist, track_name, key = result
-                                norm = normalize_artist(artist)
-                                if norm not in seen_artists and not track_in_history(key) and key not in keys_added:
+                                artist_norm = normalize_artist(artist)
+                                if artist_norm in seen_artists:
+                                    continue
+                                if not track_in_history(key) and key not in keys_added:
+                                    # Check fallback ratio
+                                    listeners = _artist_listeners_cache.get(artist, 0)
+                                    is_fallback = (listeners > 0 and listeners < 50000)
+                                    if is_fallback and fallback_count >= max_fallback:
+                                        continue
                                     tracks.append(f"{artist} - {track_name}")
                                     keys_added.add(key)
-                                    seen_artists.add(norm)
+                                    seen_artists.add(artist_norm)
                                     artists_used.append(artist)
-                        except Exception:
-                            pass
+                                    if is_fallback:
+                                        fallback_count += 1
+                        except Exception as e:
+                            log.error(f"build genre track: {e}")
 
-                for key in keys_added:
-                    add_to_history(key)
-                save_history()
-                _recent_artists.extend(artists_used)
-                _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
+            for key in keys_added:
+                add_to_history(key)
+            save_history()
+            _recent_artists.extend(artists_used)
+            _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
 
             _cancel_working(sent, timer)
             era_tag2 = f" — {_decade_label_from_set(decades)}"
