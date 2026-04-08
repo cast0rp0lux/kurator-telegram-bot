@@ -2415,6 +2415,7 @@ def handle_buttons(update, context):
 
         elif gen_action.startswith("build|"):
             style = gen_action.split("|", 1)[1]
+            global _recent_artists
 
             # Era always required for genres
             if not decades:
