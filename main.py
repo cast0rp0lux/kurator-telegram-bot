@@ -22,7 +22,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.6)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.8)"
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -1018,7 +1018,8 @@ def _filter_underground_artists(artists, genre, decades=None):
     
     log.info(f"[Underground] Pool size: {current_pool}, min required: {min_required}")
     
-    # Adaptive thresholds: try [5, 4, 3, 2, 1] until we have enough
+    # Universal rule: progressive thresholds [5,4,3,2,1] → always underground first
+    # Relax only if needed, never use artists with score < 1 directly
     thresholds = [5, 4, 3, 2, 1]
     for threshold in thresholds:
         filtered = [(a, s) for a, s in scored if s >= threshold]
@@ -1026,12 +1027,6 @@ def _filter_underground_artists(artists, genre, decades=None):
             result = [a for a, _ in filtered[:100]]  # cap at 100
             log.info(f"[Underground] {len(result)} artists passed (threshold={threshold})")
             return result
-    
-    # Use all scored artists if we reached the dynamic minimum
-    if len(scored) >= min_required:
-        result = [a for a, _ in scored[:100]]
-        log.info(f"[Underground] Using all {len(result)} scored artists")
-        return result
     
     # Final fallback — genre-match only (no scoring required)
     log.info(f"[Underground] Insufficient scored ({len(scored)}) — genre-match fallback")
