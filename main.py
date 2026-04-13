@@ -108,7 +108,7 @@ CHANGELOG = {
     }
 }
 
-ADMIN_CHAT_ID = 407607661  # Joe's chat_id (only user who can see /changelog)
+ADMIN_CHAT_ID = 939175455  # cast0rp0lux chat_id (only user who can see /changelog)
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
