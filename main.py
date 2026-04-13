@@ -22,7 +22,78 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.8)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.9)"
+
+# ─── Changelog ────────────────────────────────────────────────────────────────
+CHANGELOG = {
+    "5.9": {
+        "date": "2026-04-13",
+        "changes": [
+            "FIX CRÍTICO: Fallback genre-match ahora filtra score >= 1",
+            "Eliminados artistas mega-mainstream del fallback (Yes, Steely Dan, ELO)",
+            "Eliminado texto 'Export:' duplicado, solo botón"
+        ],
+        "technical": [
+            "Fallback nunca usa artistas con score negativo",
+            "positive_scored = [(a, s) for a, s in scored if s >= 1]",
+            "Fix UX: mensaje Export simplificado"
+        ]
+    },
+    "5.8": {
+        "date": "2026-04-13",
+        "changes": [
+            "Simplificación a regla universal de filtrado underground",
+            "Threshold progresivo [5,4,3,2,1] aplicado a TODOS los géneros",
+            "Eliminado filtro selectivo por pool size (≥80)"
+        ],
+        "technical": [
+            "Código simplificado (-16 líneas en _filter_underground_artists)",
+            "Una sola ruta de ejecución, sin casos especiales",
+            "Escalabilidad mejorada para Oracle migration"
+        ]
+    },
+    "5.7": {
+        "date": "2026-04-13",
+        "changes": [
+            "Filtro selectivo por pool size implementado",
+            "Pools ≥80 artistas exigen score ≥1",
+            "Pools <80 artistas usan todos los scored"
+        ],
+        "technical": [
+            "Protege géneros nicho (Power Pop, Pub Rock, Rockabilly)",
+            "Filtra mainstream en géneros genéricos (Rock, Pop)"
+        ]
+    },
+    "5.6": {
+        "date": "2026-04-13",
+        "changes": [
+            "Penalización escalonada para mega-mainstream",
+            "Listeners: <50K:+3, <100K:+2, <300K:+1",
+            "Listeners: <1M:-2, <3M:-5, ≥3M:-8",
+            "Elimina Beatles, Pink Floyd, Queen de playlists"
+        ],
+        "technical": [
+            "Ajuste en _compute_underground_score()",
+            "Sin cambios en lógica, solo thresholds de listeners"
+        ]
+    },
+    "5.4": {
+        "date": "2026-04-13",
+        "changes": [
+            "Normalización extendida de géneros (power pop/power-pop/powerpop)",
+            "Pool expansion automático para géneros nicho (<60 artistas)",
+            "Thresholds dinámicos según pool size",
+            "Underground filtering en Genre+Era"
+        ],
+        "technical": [
+            "normalize_tag_extended() retorna versiones base+compact",
+            "_get_artist_tags_listeners() cacheado",
+            "Incremento pool 20-40% en géneros con variantes"
+        ]
+    }
+}
+
+ADMIN_CHAT_ID = 407607661  # Joe's chat_id (only user who can see /changelog)
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -1028,12 +1099,15 @@ def _filter_underground_artists(artists, genre, decades=None):
             log.info(f"[Underground] {len(result)} artists passed (threshold={threshold})")
             return result
     
-    # Final fallback — genre-match only (no scoring required)
+    # Final fallback — keep only positive scores, then genre-match if still needed
     log.info(f"[Underground] Insufficient scored ({len(scored)}) — genre-match fallback")
-    result = [a for a, _ in scored]  # keep what we have
+    # CRITICAL: Never use artists with negative score
+    positive_scored = [(a, s) for a, s in scored if s >= 1]
+    result = [a for a, _ in positive_scored]  # start with positive scores only
     target_norm, target_comp = normalize_tag_extended(genre)
     scored_names = {a for a, _ in scored}
     
+    # Add more artists via genre-match only if needed
     for artist in artists:
         if len(result) >= 100:
             break
@@ -1043,7 +1117,7 @@ def _filter_underground_artists(artists, genre, decades=None):
         if target_norm in tags_norm or target_comp in tags_comp:
             result.append(artist)
     
-    log.info(f"[Underground] Final pool: {len(result)} artists")
+    log.info(f"[Underground] Final pool: {len(result)} artists (fallback with score >= 1)")
     return result[:100]
 
 
@@ -2119,9 +2193,9 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
         disable_web_page_preview=True,
     )
 
-    # Message 2 — export buttons, separate so playlist is never affected
+    # Export buttons sent separately (no text, just buttons)
     message.reply_text(
-        "📡 Export:",
+        ".",  # invisible character to allow buttons
         reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
     )
 
@@ -2199,6 +2273,40 @@ def start(update, context):
 
 def help_command(update, context):
     update.message.reply_text(_help_text(), parse_mode="HTML")
+
+def changelog_command(update, context):
+    """Show development changelog (admin only)."""
+    chat_id = update.effective_chat.id
+    
+    # Only allow admin to see changelog
+    if chat_id != ADMIN_CHAT_ID:
+        return
+    
+    # Build changelog text
+    changelog_text = "📀 <b>Kurator Development Log</b>\n\n"
+    
+    # Sort versions in reverse order (newest first)
+    sorted_versions = sorted(CHANGELOG.keys(), key=lambda x: float(x), reverse=True)
+    
+    for version in sorted_versions:
+        entry = CHANGELOG[version]
+        changelog_text += f"━━━ <b>v{version}</b> ({entry['date']}) ━━━\n"
+        
+        # Changes
+        if entry.get('changes'):
+            changelog_text += "✨ <b>Cambios:</b>\n"
+            for change in entry['changes']:
+                changelog_text += f"  • {change}\n"
+        
+        # Technical details
+        if entry.get('technical'):
+            changelog_text += "\n⚙️ <b>Técnico:</b>\n"
+            for tech in entry['technical']:
+                changelog_text += f"  • {tech}\n"
+        
+        changelog_text += "\n"
+    
+    update.message.reply_text(changelog_text, parse_mode="HTML")
 
 def playlist(update, context):
     msg     = update.message
@@ -3522,9 +3630,10 @@ dp       = updater.dispatcher
 threading.Thread(target=_start_flask, daemon=True).start()
 log.info("Flask OAuth server started on port 8080")
 
-dp.add_handler(CommandHandler("start",    start))
-dp.add_handler(CommandHandler("help",     help_command))
-dp.add_handler(CommandHandler("playlist", playlist))
+dp.add_handler(CommandHandler("start",     start))
+dp.add_handler(CommandHandler("help",      help_command))
+dp.add_handler(CommandHandler("changelog", changelog_command))
+dp.add_handler(CommandHandler("playlist",  playlist))
 dp.add_handler(CommandHandler("dig",      dig))
 dp.add_handler(CommandHandler("rare",     rare))
 dp.add_handler(CommandHandler("map",      map_command))
