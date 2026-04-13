@@ -14,7 +14,7 @@ from urllib.parse import quote, urlencode
 
 import requests
 from flask import Flask, request as flask_request
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, ReplyKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, Filters, Updater
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -22,10 +22,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.0)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.1)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.1": {
+        "date": "2026-04-13",
+        "changes": [
+            "Botón persistente 🦍 Menú en barra inferior de Telegram",
+            "Fix /changelog: ADMIN_CHAT_ID actualizado",
+            "Fix /changelog: html.escape() en entradas para evitar crash HTML"
+        ],
+        "technical": [
+            "_persistent_keyboard(): ReplyKeyboardMarkup con botón Menú",
+            "handle_text_reply: intercepta '🦍 Menú' antes de ForceReply logic",
+            "start(): envía _persistent_keyboard() en primer uso post-onboarding"
+        ]
+    },
     "6.0": {
         "date": "2026-04-13",
         "changes": [
@@ -2224,6 +2237,12 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
         reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
     )
 
+# ─── Persistent bottom keyboard ───────────────────────────────────────────────
+
+def _persistent_keyboard():
+    """Botón fijo en la barra inferior de Telegram para acceder al menú principal."""
+    return ReplyKeyboardMarkup([["🦍 Menú"]], resize_keyboard=True, input_field_placeholder="Escribe o pulsa Menú…")
+
 # ─── Main menu ────────────────────────────────────────────────────────────────
 
 def main_menu_markup():
@@ -2273,6 +2292,7 @@ Decade filtering takes up to 60 seconds. Kurator cross-checks artists against mu
 def start(update, context):
     chat_id = update.effective_chat.id
     if is_onboarded(chat_id):
+        update.message.reply_text("🦍", reply_markup=_persistent_keyboard())
         update.message.reply_text(
             f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.",
             parse_mode="HTML",
@@ -3612,6 +3632,16 @@ def handle_text_reply(update, context):
     text    = msg.text.strip() if msg.text else ""
 
     if not text:
+        return
+
+    # Botón persistente de Menú — tiene prioridad sobre cualquier estado pendiente
+    if text in ("🦍 Menú", "Menú", "Menu", "menú", "menu"):
+        _pending_gen.pop(chat_id, None)
+        msg.reply_text(
+            f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.",
+            parse_mode="HTML",
+            reply_markup=main_menu_markup()
+        )
         return
 
     pending = _pending_gen.get(chat_id, {})
