@@ -828,25 +828,132 @@ def _get_valid_genres_for(genre):
     return valid
 
 _artist_listeners_cache = {}  # artist → listener count
+_artist_tags_cache = {}       # artist → list of tags
 
-def _artist_matches_genre(artist, valid_genres):
-    """Return True if artist tags don't contain incompatible genres.
-    Also caches listener count for later use in fallback ratio logic."""
+def _get_artist_info(artist):
+    """Single Last.fm call returning (tags, listeners) — cached."""
+    if artist in _artist_tags_cache:
+        return _artist_tags_cache[artist], _artist_listeners_cache.get(artist, 0)
     try:
         data      = lastfm("artist.getinfo", artist=artist)
         listeners = int(data.get("artist", {}).get("stats", {}).get("listeners", 0) or 0)
+        raw_tags  = data.get("artist", {}).get("tags", {}).get("tag", [])
+        if isinstance(raw_tags, dict):
+            raw_tags = [raw_tags]
+        tags = [t["name"].lower().replace("-", " ").strip() for t in raw_tags if t.get("name")]
         _artist_listeners_cache[artist] = listeners
-        tags = data.get("artist", {}).get("tags", {}).get("tag", [])
-        if isinstance(tags, dict):
-            tags = [tags]
-        artist_tags = {t["name"].lower() for t in tags if t.get("name")}
-        if not artist_tags:
-            return True
-        if artist_tags & GENRE_INCOMPATIBLE:
-            return False
-        return True
+        _artist_tags_cache[artist]      = tags
+        return tags, listeners
     except Exception:
+        return [], 0
+
+def _artist_matches_genre(artist, valid_genres):
+    """Return True if artist tags don't contain incompatible genres."""
+    tags, _ = _get_artist_info(artist)
+    if not tags:
         return True
+    artist_tags = set(tags)
+    if artist_tags & GENRE_INCOMPATIBLE:
+        return False
+    return True
+
+# Underground scoring constants
+_UNDERGROUND_RARE_TAGS = {
+    "obscure", "rare", "garage punk", "psychedelic garage",
+    "lo fi", "lofi", "underground", "proto punk", "freakbeat",
+    "raw", "primitive", "nuggets"
+}
+_UNDERGROUND_BAD_CONTEXT = {
+    "classic rock", "arena rock", "hard rock", "progressive rock",
+    "pop", "mainstream", "adult contemporary", "soft rock"
+}
+
+def _compute_underground_score(artist, target_genre):
+    """
+    Score artist for underground/discovery quality.
+    Single Last.fm call via _get_artist_info (cached).
+    Returns score int — higher = better underground candidate.
+    Returns -999 if artist should be discarded.
+    """
+    tags, listeners = _get_artist_info(artist)
+
+    if not tags:
+        return -999
+
+    target = target_genre.lower().replace("-", " ").strip()
+
+    # Genre must be present (exact match required)
+    if target not in tags:
+        # Allow near genres as weak match
+        near = [g.lower().replace("-", " ").strip()
+                for g in GENRE_GRAPH.get(target_genre.lower(), {}).get("near", [])]
+        if not any(t in near for t in tags):
+            return -999
+
+    score = 4  # base — genre matched
+
+    # Boost for rare/underground tags
+    if any(t in _UNDERGROUND_RARE_TAGS for t in tags):
+        score += 2
+
+    # Listener-based scoring
+    if 0 < listeners < 200_000:
+        score += 2
+    elif listeners < 500_000:
+        score += 1
+    elif listeners > 2_000_000:
+        score -= 3  # too mainstream
+
+    # Penalize mainstream context tags
+    if any(t in _UNDERGROUND_BAD_CONTEXT for t in tags):
+        score -= 3
+
+    # Reward rich tagging (proxy for community knowledge)
+    if len(tags) >= 5:
+        score += 1
+
+    return score
+
+
+def _filter_underground_artists(artists, genre, min_score=3):
+    """
+    Score and filter artists by underground quality.
+    Falls back to genre-match-only if too few pass the threshold.
+    Uses concurrent calls via ThreadPoolExecutor.
+    """
+    log.info(f"[Underground] Scoring {len(artists)} artists for '{genre}'")
+
+    scored = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futures = {ex.submit(_compute_underground_score, a, genre): a for a in artists}
+        for f in as_completed(futures):
+            artist = futures[f]
+            try:
+                score = f.result()
+                if score >= min_score:
+                    scored.append((artist, score))
+            except Exception:
+                pass
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    result = [a for a, _ in scored]
+    log.info(f"[Underground] {len(result)}/{len(artists)} passed (score >= {min_score})")
+
+    # Fallback — if too few, relax to genre-match only
+    if len(result) < 30:
+        log.info(f"[Underground] Too few — relaxing to genre-match fallback")
+        fallback = []
+        target = genre.lower().replace("-", " ").strip()
+        for artist in artists:
+            if artist in [a for a, _ in scored]:
+                continue
+            tags, _ = _get_artist_info(artist)
+            if target in tags:
+                fallback.append(artist)
+        # Underground artists first, then fallback
+        result = result + fallback
+
+    return result
 
 def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
     """
@@ -2577,7 +2684,14 @@ def handle_buttons(update, context):
             if len(filtered_pool) < 10:
                 filtered_pool = pool
 
-            log.info(f"[Oracle-POC] Pool: {len(filtered_pool)} artists for '{style}' {decades}")
+            # Apply underground scoring filter
+            if message:
+                _safe_reply(message, "🔍 Filtering for quality…")
+            filtered_pool = _filter_underground_artists(filtered_pool, style)
+            if len(filtered_pool) < 10:
+                filtered_pool = pool  # safety fallback
+
+            log.info(f"[Oracle-POC] Final pool: {len(filtered_pool)} artists for '{style}' {decades}")
 
             tracks       = []
             keys_added   = set()
