@@ -22,7 +22,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.3)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.4)"
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -827,29 +827,70 @@ def _get_valid_genres_for(genre):
     valid.update(g.lower() for g in node.get("mid", []))
     return valid
 
+# ─── Genre/Tag Normalization ──────────────────────────────────────────────────
+
+def normalize_tag(tag):
+    """
+    Normalize tag/genre for consistent matching.
+    Handles hyphens, underscores, and multiple spaces.
+    """
+    tag = tag.lower()
+    tag = tag.replace("-", " ")
+    tag = tag.replace("_", " ")
+    tag = re.sub(r"\s+", " ", tag)
+    return tag.strip()
+
+def normalize_tag_extended(tag):
+    """
+    Return both base normalized and compact (no spaces) versions.
+    Critical for matching variants like 'power pop' / 'power-pop' / 'powerpop'.
+    """
+    base = normalize_tag(tag)
+    compact = base.replace(" ", "")
+    return base, compact
+
 _artist_listeners_cache = {}  # artist → listener count
-_artist_tags_cache = {}       # artist → list of tags
+_artist_tags_cache = {}       # artist → (normalized_tags, compact_tags)
+_artist_tags_compact_cache = {}  # artist → compact tags
 
 def _get_artist_tags_listeners(artist):
-    """Single Last.fm call returning (tags, listeners) — cached."""
+    """
+    Single Last.fm call returning (normalized_tags, compact_tags, listeners) — cached.
+    Returns two tag lists: base normalized and compact (no spaces) versions.
+    """
     if artist in _artist_tags_cache:
-        return _artist_tags_cache[artist], _artist_listeners_cache.get(artist, 0)
+        tags_norm = _artist_tags_cache[artist]
+        tags_comp = _artist_tags_compact_cache.get(artist, [])
+        listeners = _artist_listeners_cache.get(artist, 0)
+        return tags_norm, tags_comp, listeners
+    
     try:
         data      = lastfm("artist.getinfo", artist=artist)
         listeners = int(data.get("artist", {}).get("stats", {}).get("listeners", 0) or 0)
         raw_tags  = data.get("artist", {}).get("tags", {}).get("tag", [])
         if isinstance(raw_tags, dict):
             raw_tags = [raw_tags]
-        tags = [t["name"].lower().replace("-", " ").strip() for t in raw_tags if t.get("name")]
+        
+        # Normalize tags: both base and compact versions
+        tags_normalized = []
+        tags_compact = []
+        for t in raw_tags:
+            if t.get("name"):
+                norm, comp = normalize_tag_extended(t["name"])
+                tags_normalized.append(norm)
+                tags_compact.append(comp)
+        
         _artist_listeners_cache[artist] = listeners
-        _artist_tags_cache[artist]      = tags
-        return tags, listeners
+        _artist_tags_cache[artist] = tags_normalized
+        _artist_tags_compact_cache[artist] = tags_compact
+        
+        return tags_normalized, tags_compact, listeners
     except Exception:
-        return [], 0
+        return [], [], 0
 
 def _artist_matches_genre(artist, valid_genres):
     """Return True if artist tags don't contain incompatible genres."""
-    tags, _ = _get_artist_tags_listeners(artist)
+    tags, _, _ = _get_artist_tags_listeners(artist)
     if not tags:
         return True
     artist_tags = set(tags)
@@ -870,30 +911,33 @@ _UNDERGROUND_BAD_CONTEXT = {
 
 def _compute_underground_score(artist, target_genre):
     """
-    Score artist for underground/discovery quality (hybrid strategy).
+    Score artist for underground/discovery quality (hybrid strategy + normalization).
     Single Last.fm call via _get_artist_tags_listeners (cached).
     Returns score int — higher = better underground candidate.
     Returns -999 if artist should be discarded.
     """
-    tags, listeners = _get_artist_tags_listeners(artist)
+    tags_norm, tags_comp, listeners = _get_artist_tags_listeners(artist)
 
-    if not tags:
+    if not tags_norm:
         return -999
 
-    target = target_genre.lower().replace("-", " ").strip()
+    # Normalize target genre: both base and compact versions
+    target_norm, target_comp = normalize_tag_extended(target_genre)
 
-    # Genre must be present (exact match required)
-    if target not in tags:
+    # Genre must be present (match either normalized or compact)
+    genre_matched = target_norm in tags_norm or target_comp in tags_comp
+    
+    if not genre_matched:
         # Allow near genres as weak match
         near = [g.lower().replace("-", " ").strip()
                 for g in GENRE_GRAPH.get(target_genre.lower(), {}).get("near", [])]
-        if not any(t in near for t in tags):
+        if not any(t in near for t in tags_norm):
             return -999
 
     score = 4  # base — genre matched
 
     # Boost for rare/underground tags
-    if any(t in _UNDERGROUND_RARE_TAGS for t in tags):
+    if any(t in _UNDERGROUND_RARE_TAGS for t in tags_norm):
         score += 2
 
     # Listener-based scoring (aggressive thresholds)
@@ -907,11 +951,11 @@ def _compute_underground_score(artist, target_genre):
         score -= 2  # mainstream
 
     # Penalize mainstream context tags
-    if any(t in _UNDERGROUND_BAD_CONTEXT for t in tags):
+    if any(t in _UNDERGROUND_BAD_CONTEXT for t in tags_norm):
         score -= 3
 
     # Reward rich tagging (proxy for community knowledge)
-    if len(tags) >= 5:
+    if len(tags_norm) >= 5:
         score += 1
 
     return score
@@ -988,7 +1032,7 @@ def _filter_underground_artists(artists, genre, decades=None):
     # Final fallback — genre-match only (no scoring required)
     log.info(f"[Underground] Insufficient scored ({len(scored)}) — genre-match fallback")
     result = [a for a, _ in scored]  # keep what we have
-    target = genre.lower().replace("-", " ").strip()
+    target_norm, target_comp = normalize_tag_extended(genre)
     scored_names = {a for a, _ in scored}
     
     for artist in artists:
@@ -996,8 +1040,8 @@ def _filter_underground_artists(artists, genre, decades=None):
             break
         if artist in scored_names:
             continue
-        tags, _ = _get_artist_tags_listeners(artist)
-        if target in tags:
+        tags_norm, tags_comp, _ = _get_artist_tags_listeners(artist)
+        if target_norm in tags_norm or target_comp in tags_comp:
             result.append(artist)
     
     log.info(f"[Underground] Final pool: {len(result)} artists")
