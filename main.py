@@ -22,7 +22,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.0-poc)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.1)"
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -830,7 +830,7 @@ def _get_valid_genres_for(genre):
 _artist_listeners_cache = {}  # artist → listener count
 _artist_tags_cache = {}       # artist → list of tags
 
-def _get_artist_info(artist):
+def _get_artist_tags_listeners(artist):
     """Single Last.fm call returning (tags, listeners) — cached."""
     if artist in _artist_tags_cache:
         return _artist_tags_cache[artist], _artist_listeners_cache.get(artist, 0)
@@ -849,7 +849,7 @@ def _get_artist_info(artist):
 
 def _artist_matches_genre(artist, valid_genres):
     """Return True if artist tags don't contain incompatible genres."""
-    tags, _ = _get_artist_info(artist)
+    tags, _ = _get_artist_tags_listeners(artist)
     if not tags:
         return True
     artist_tags = set(tags)
@@ -871,11 +871,11 @@ _UNDERGROUND_BAD_CONTEXT = {
 def _compute_underground_score(artist, target_genre):
     """
     Score artist for underground/discovery quality.
-    Single Last.fm call via _get_artist_info (cached).
+    Single Last.fm call via _get_artist_tags_listeners (cached).
     Returns score int — higher = better underground candidate.
     Returns -999 if artist should be discarded.
     """
-    tags, listeners = _get_artist_info(artist)
+    tags, listeners = _get_artist_tags_listeners(artist)
 
     if not tags:
         return -999
@@ -947,7 +947,7 @@ def _filter_underground_artists(artists, genre, min_score=3):
         for artist in artists:
             if artist in [a for a, _ in scored]:
                 continue
-            tags, _ = _get_artist_info(artist)
+            tags, _ = _get_artist_tags_listeners(artist)
             if target in tags:
                 fallback.append(artist)
         # Underground artists first, then fallback
@@ -1835,7 +1835,7 @@ def _mb_label_artists(label_name):
 
 # ─── Artist info ──────────────────────────────────────────────────────────────
 
-def _get_artist_info(artist_query):
+def _get_artist_full_info(artist_query):
     """
     Fetch full artist info. Returns dict with:
     official_name, country_code, country_name, flag,
@@ -2223,7 +2223,7 @@ def _render_map(message, artist_query, chat_id):
     if not sorted_styles:
         sorted_styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:12]
 
-    info = _get_artist_info(artist_query)
+    info = _get_artist_full_info(artist_query)
     if not info["genres"]:
         info["genres"] = [s for s, _ in sorted_styles[:4]]
 
@@ -2632,6 +2632,16 @@ def handle_buttons(update, context):
                     names = _expand_trail(artist, 2)
             else:
                 names = _expand_trail(artist, hops)
+            
+            # Apply underground scoring filter
+            if message:
+                _safe_reply(message, "🔍 Filtering for quality…")
+            original_count = len(names)
+            names = _filter_underground_artists(names, artist)
+            if len(names) < 10:
+                log.info(f"[Trail] Underground filter too strict ({len(names)}/{original_count}) — using all artists")
+                names = _expand_trail(artist, hops)  # fallback to unfiltered
+            
             result = select_tracks(names, skip_recent=False)
             _cancel_working(sent, timer)
             send_playlist(message, result,
