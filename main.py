@@ -2307,30 +2307,31 @@ def changelog_command(update, context):
     if chat_id != ADMIN_CHAT_ID:
         return
     
+    import html as _html
     # Build changelog text
     changelog_text = "📀 <b>Kurator Development Log</b>\n\n"
-    
+
     # Sort versions in reverse order (newest first)
     sorted_versions = sorted(CHANGELOG.keys(), key=lambda x: float(x), reverse=True)
-    
+
     for version in sorted_versions:
         entry = CHANGELOG[version]
         changelog_text += f"━━━ <b>v{version}</b> ({entry['date']}) ━━━\n"
-        
+
         # Changes
         if entry.get('changes'):
             changelog_text += "✨ <b>Cambios:</b>\n"
             for change in entry['changes']:
-                changelog_text += f"  • {change}\n"
-        
+                changelog_text += f"  • {_html.escape(change)}\n"
+
         # Technical details
         if entry.get('technical'):
             changelog_text += "\n⚙️ <b>Técnico:</b>\n"
             for tech in entry['technical']:
-                changelog_text += f"  • {tech}\n"
-        
+                changelog_text += f"  • {_html.escape(tech)}\n"
+
         changelog_text += "\n"
-    
+
     update.message.reply_text(changelog_text, parse_mode="HTML")
 
 def playlist(update, context):
