@@ -22,10 +22,25 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.9)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.0)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.0": {
+        "date": "2026-04-13",
+        "changes": [
+            "Near-genre base score reducido a 2 (antes 4): artistas sin género exacto penalizados",
+            "Split rango listeners 300k-1M: 300k-500k(-2), 500k-1M(-4)",
+            "Hard cap 750k listeners cuando threshold <= 2 en filtrado underground",
+            "Seeds de Last.fm desde posición 30 en vez de 20 (evita semi-mainstream)"
+        ],
+        "technical": [
+            "_compute_underground_score: near-genre score=2, exact score=4",
+            "_compute_underground_score: listeners 500k-1M → score=0 (rechazado)",
+            "_filter_underground_artists: hard cap activo en threshold <=2",
+            "_get_era_artists_from_lastfm: seed_pool top_names[30:150]"
+        ]
+    },
     "5.9": {
         "date": "2026-04-13",
         "changes": [
@@ -1004,8 +1019,9 @@ def _compute_underground_score(artist, target_genre):
                 for g in GENRE_GRAPH.get(target_genre.lower(), {}).get("near", [])]
         if not any(t in near for t in tags_norm):
             return -999
-
-    score = 4  # base — genre matched
+        score = 2  # near-genre: base reducida — no compite igual que match exacto
+    else:
+        score = 4  # exact genre match
 
     # Boost for rare/underground tags
     if any(t in _UNDERGROUND_RARE_TAGS for t in tags_norm):
@@ -1018,8 +1034,10 @@ def _compute_underground_score(artist, target_genre):
         score += 2  # underground
     elif listeners < 300_000:
         score += 1  # semi-underground
+    elif listeners < 500_000:
+        score -= 2  # moderado (300k-500k)
     elif listeners < 1_000_000:
-        score -= 2  # mainstream
+        score -= 4  # mainstream (500k-1M): score resultante = 0, no pasa threshold 1
     elif listeners < 3_000_000:
         score -= 5  # very mainstream
     else:
@@ -1093,7 +1111,14 @@ def _filter_underground_artists(artists, genre, decades=None):
     # Relax only if needed, never use artists with score < 1 directly
     thresholds = [5, 4, 3, 2, 1]
     for threshold in thresholds:
-        filtered = [(a, s) for a, s in scored if s >= threshold]
+        if threshold <= 2:
+            # Hard cap: cuando el threshold relaja, bloquear artistas con >750k listeners
+            # _artist_listeners_cache ya fue poblado durante el scoring (sin llamadas extra)
+            filtered = [(a, s) for a, s in scored
+                        if s >= threshold
+                        and _artist_listeners_cache.get(a, 0) <= 750_000]
+        else:
+            filtered = [(a, s) for a, s in scored if s >= threshold]
         if len(filtered) >= min_required:
             result = [a for a, _ in filtered[:100]]  # cap at 100
             log.info(f"[Underground] {len(result)} artists passed (threshold={threshold})")
@@ -1140,9 +1165,9 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
     if not top_names:
         return []
 
-    # Step 2: pick 5 random seeds from positions 20-150 — representative but not mainstream
+    # Step 2: pick 5 random seeds from positions 30-150 — skip top 30 (likely 500k+ listeners)
     # Filter out invalid seeds (song titles, lowercase usernames, single words that look like titles)
-    seed_pool = [a for a in top_names[20:150]
+    seed_pool = [a for a in top_names[30:150]
                  if len(a) > 2
                  and not a[0].islower()
                  and not any(c in a for c in ["@", "/", "http"])
