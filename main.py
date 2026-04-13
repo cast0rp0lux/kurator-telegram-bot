@@ -2195,7 +2195,7 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
 
     # Export buttons sent separately (no text, just buttons)
     message.reply_text(
-        ".",  # invisible character to allow buttons
+        "\u200b",  # zero-width space — invisible but satisfies Telegram's non-empty requirement
         reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
     )
 
