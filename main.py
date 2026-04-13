@@ -22,7 +22,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v4.9.1)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.0-poc)"
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -1379,13 +1379,7 @@ def _store_tracks(tracks, title="Kurator Playlist"):
 # ─── Decade selector ──────────────────────────────────────────────────────────
 
 def _get_relevant_decades(genre):
-    """
-    Return the relevant decades for a genre based on GENRE_TO_DISCOGS_STYLES.
-    If genre not mapped, returns all decades.
-    """
-    genre_map = GENRE_TO_DISCOGS_STYLES.get(genre.lower().strip(), {})
-    if genre_map:
-        return [d for d in DECADES if d in genre_map]
+    """Always return all decades — genre should not restrict era choice."""
     return DECADES
 
 def _decade_selector_buttons(chat_id, genre=None):
@@ -1558,6 +1552,84 @@ def _mb_get(path, params=None):
             if attempt < 2:
                 time.sleep(2 ** attempt)
     return {}
+
+
+def _mb_get_artists_by_genre(genre, decades, limit=200):
+    """
+    POC — simulates future Oracle query using MusicBrainz API.
+    Searches artists by genre tag, filters by era using begin/end dates.
+    In production: SELECT * FROM music_artists JOIN artist_genres WHERE genre=X AND year BETWEEN Y AND Z
+    Returns list of artist names sorted by tag weight (relevance).
+    """
+    lo = min(DECADE_YEARS[d][0] for d in decades) if decades else 0
+    hi = max(DECADE_YEARS[d][1] for d in decades) if decades else 9999
+
+    log.info(f"[Oracle-POC] Querying genre=\'{genre}\' era={lo}-{hi}")
+
+    all_artists = []
+    for offset in range(0, 400, 100):
+        data = _mb_get("artist/", {
+            "query":  f'tag:"{genre}"',
+            "limit":  100,
+            "offset": offset,
+        })
+        candidates = data.get("artists", [])
+        if not candidates:
+            break
+        for a in candidates:
+            name  = a.get("name", "")
+            score = int(a.get("score", 0))
+            if not name or score < 50:
+                continue
+            if not _is_valid_artist_name(name):
+                continue
+            begin_area = a.get("life-span", {}) or {}
+            begin_str  = (begin_area.get("begin") or "")[:4]
+            end_str    = (begin_area.get("end")   or "")[:4]
+            begin_year = int(begin_str) if begin_str.isdigit() else None
+            end_year   = int(end_str)   if end_str.isdigit()   else None
+            if decades:
+                if begin_year and begin_year > hi:
+                    continue
+                if end_year and end_year < lo:
+                    continue
+            all_artists.append((name, score))
+        if len(all_artists) >= limit:
+            break
+
+    all_artists.sort(key=lambda x: x[1], reverse=True)
+    result = [name for name, _ in all_artists[:limit]]
+    log.info(f"[Oracle-POC] \'{genre}\' {lo}-{hi}: {len(result)} artists found")
+    return result
+
+
+def _update_user_genre_profile(chat_id, genre, decades=None):
+    """Silently track genre interactions per user — simulates Oracle user_genre_profile table."""
+    try:
+        key     = f"user_profile_{chat_id}"
+        profile = _mongo_get("store", key, {"genres": {}, "decades": {}})
+        genre_lower = genre.lower().strip()
+        profile["genres"][genre_lower] = profile["genres"].get(genre_lower, 0) + 1
+        if decades:
+            for d in decades:
+                profile["decades"][d] = profile["decades"].get(d, 0) + 1
+        _mongo_set("store", key, profile)
+    except Exception as e:
+        log.error(f"_update_user_genre_profile: {e}")
+
+
+def _get_user_genre_profile(chat_id):
+    """Get user genre profile — simulates SELECT FROM user_genre_profile ORDER BY interactions DESC."""
+    try:
+        key     = f"user_profile_{chat_id}"
+        profile = _mongo_get("store", key, {"genres": {}, "decades": {}})
+        top_genres  = sorted(profile["genres"].items(),  key=lambda x: x[1], reverse=True)
+        top_decades = sorted(profile["decades"].items(), key=lambda x: x[1], reverse=True)
+        return {"genres": top_genres, "decades": top_decades}
+    except Exception as e:
+        log.error(f"_get_user_genre_profile: {e}")
+        return {"genres": [], "decades": []}
+
 
 def _mb_find_artist(artist_query):
     """
@@ -2477,16 +2549,22 @@ def handle_buttons(update, context):
             query.edit_message_text(f"🎸 Building {style.title()}{era_tag} playlist…")
             sent, timer = _working_message(message, "🎸 Still building…", delay=50)
 
-            # Use Last.fm as source for genre playlists — much better coverage than Discogs
+            # v5.0 POC — use MusicBrainz tag search to simulate Oracle query
+            # In production: SELECT artists FROM oracle WHERE genre=style AND era=decades
             lo = min(DECADE_YEARS[d][0] for d in decades)
             hi = max(DECADE_YEARS[d][1] for d in decades)
             decade_year_range = (lo, hi)
 
-            pool = _get_era_artists_from_lastfm(style, decades, max_artists=150)
+            pool = _mb_get_artists_by_genre(style, decades, limit=200)
 
+            # Fallback to Last.fm seeds if MB tag returns nothing
             if not pool:
-                # Fallback to Discogs if Last.fm returns nothing
-                log.info(f"Last.fm pool empty for '{style}' — falling back to Discogs")
+                log.info(f"[Oracle-POC] No results for '{style}' — falling back to Last.fm seeds")
+                pool = _get_era_artists_from_lastfm(style, decades, max_artists=150)
+
+            # Fallback to Discogs if both empty
+            if not pool:
+                log.info(f"[Oracle-POC] Last.fm empty — falling back to Discogs")
                 pool = _get_era_artists_from_discogs(decades, mode="playlist",
                                                       max_artists=100,
                                                       style_override=_resolve_genre_styles(style, decades))
@@ -2499,17 +2577,12 @@ def handle_buttons(update, context):
             if len(filtered_pool) < 10:
                 filtered_pool = pool
 
-            # Dynamic fallback ratio based on pool size
-            pool_size      = len(filtered_pool)
-            max_fallback   = int(target * 0.3) if pool_size < 40 else int(target * 0.5)
-            min_listeners  = 500 if pool_size < 40 else 0
-            log.info(f"Pool size: {pool_size} — max_fallback: {max_fallback}, min_listeners: {min_listeners}")
+            log.info(f"[Oracle-POC] Pool: {len(filtered_pool)} artists for '{style}' {decades}")
 
             tracks       = []
             keys_added   = set()
             seen_artists = set()
             artists_used = []
-            fallback_count = 0
 
             BATCH_SIZE = 20
             for i in range(0, min(len(filtered_pool), target * 4), BATCH_SIZE):
@@ -2517,7 +2590,7 @@ def handle_buttons(update, context):
                     break
                 batch = filtered_pool[i:i + BATCH_SIZE]
                 with ThreadPoolExecutor(max_workers=4) as ex:
-                    futures = [ex.submit(_fetch_track_for_genre, a, decade_year_range, min_listeners)
+                    futures = [ex.submit(_fetch_track_for_genre, a, decade_year_range)
                                for a in batch]
                     for f in as_completed(futures):
                         if len(tracks) >= target:
@@ -2530,17 +2603,10 @@ def handle_buttons(update, context):
                                 if artist_norm in seen_artists:
                                     continue
                                 if not track_in_history(key) and key not in keys_added:
-                                    # Check fallback ratio
-                                    listeners = _artist_listeners_cache.get(artist, 0)
-                                    is_fallback = (listeners > 0 and listeners < 50000)
-                                    if is_fallback and fallback_count >= max_fallback:
-                                        continue
                                     tracks.append(f"{artist} - {track_name}")
                                     keys_added.add(key)
                                     seen_artists.add(artist_norm)
                                     artists_used.append(artist)
-                                    if is_fallback:
-                                        fallback_count += 1
                         except Exception as e:
                             log.error(f"build genre track: {e}")
 
@@ -2549,6 +2615,9 @@ def handle_buttons(update, context):
             save_history()
             _recent_artists.extend(artists_used)
             _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
+
+            # Track user genre profile silently
+            _update_user_genre_profile(chat_id, style, decades)
 
             _cancel_working(sent, timer)
             era_tag2 = f" — {_decade_label_from_set(decades)}"
