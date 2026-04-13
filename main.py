@@ -22,7 +22,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.1)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.2)"
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -870,7 +870,7 @@ _UNDERGROUND_BAD_CONTEXT = {
 
 def _compute_underground_score(artist, target_genre):
     """
-    Score artist for underground/discovery quality.
+    Score artist for underground/discovery quality (hybrid strategy).
     Single Last.fm call via _get_artist_tags_listeners (cached).
     Returns score int — higher = better underground candidate.
     Returns -999 if artist should be discarded.
@@ -896,13 +896,15 @@ def _compute_underground_score(artist, target_genre):
     if any(t in _UNDERGROUND_RARE_TAGS for t in tags):
         score += 2
 
-    # Listener-based scoring
-    if 0 < listeners < 200_000:
-        score += 2
-    elif listeners < 500_000:
-        score += 1
-    elif listeners > 2_000_000:
-        score -= 3  # too mainstream
+    # Listener-based scoring (aggressive thresholds)
+    if 0 < listeners < 50_000:
+        score += 3  # very underground
+    elif listeners < 100_000:
+        score += 2  # underground
+    elif listeners < 300_000:
+        score += 1  # semi-underground
+    else:
+        score -= 2  # mainstream
 
     # Penalize mainstream context tags
     if any(t in _UNDERGROUND_BAD_CONTEXT for t in tags):
@@ -915,14 +917,16 @@ def _compute_underground_score(artist, target_genre):
     return score
 
 
-def _filter_underground_artists(artists, genre, min_score=3):
+def _filter_underground_artists(artists, genre):
     """
-    Score and filter artists by underground quality.
-    Falls back to genre-match-only if too few pass the threshold.
+    Score and filter artists by underground quality with adaptive thresholds.
+    Progressive relaxation: tries [5, 4, 3, 2, 1] until >= 40 artists found.
+    Falls back to genre-match-only if still insufficient.
     Uses concurrent calls via ThreadPoolExecutor.
     """
     log.info(f"[Underground] Scoring {len(artists)} artists for '{genre}'")
 
+    # Score all artists once
     scored = []
     with ThreadPoolExecutor(max_workers=6) as ex:
         futures = {ex.submit(_compute_underground_score, a, genre): a for a in artists}
@@ -930,30 +934,46 @@ def _filter_underground_artists(artists, genre, min_score=3):
             artist = futures[f]
             try:
                 score = f.result()
-                if score >= min_score:
+                if score > -999:  # include all scored artists
                     scored.append((artist, score))
             except Exception:
                 pass
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    result = [a for a, _ in scored]
-    log.info(f"[Underground] {len(result)}/{len(artists)} passed (score >= {min_score})")
+    
+    # Adaptive thresholds: try [5, 4, 3, 2, 1] until we have enough
+    thresholds = [5, 4, 3, 2, 1]
+    for threshold in thresholds:
+        filtered = [(a, s) for a, s in scored if s >= threshold]
+        if len(filtered) >= 40:
+            result = [a for a, _ in filtered[:100]]  # cap at 100
+            log.info(f"[Underground] {len(result)} artists passed (threshold={threshold})")
+            return result
+    
+    # Use all scored artists if we still don't have 40
+    if len(scored) >= 40:
+        result = [a for a, _ in scored[:100]]
+        log.info(f"[Underground] Using all {len(result)} scored artists")
+        return result
+    
+    # Final fallback — genre-match only (no scoring required)
+    log.info(f"[Underground] Insufficient scored ({len(scored)}) — genre-match fallback")
+    result = [a for a, _ in scored]  # keep what we have
+    target = genre.lower().replace("-", " ").strip()
+    scored_names = {a for a, _ in scored}
+    
+    for artist in artists:
+        if len(result) >= 100:
+            break
+        if artist in scored_names:
+            continue
+        tags, _ = _get_artist_tags_listeners(artist)
+        if target in tags:
+            result.append(artist)
+    
+    log.info(f"[Underground] Final pool: {len(result)} artists")
+    return result[:100]
 
-    # Fallback — if too few, relax to genre-match only
-    if len(result) < 30:
-        log.info(f"[Underground] Too few — relaxing to genre-match fallback")
-        fallback = []
-        target = genre.lower().replace("-", " ").strip()
-        for artist in artists:
-            if artist in [a for a, _ in scored]:
-                continue
-            tags, _ = _get_artist_tags_listeners(artist)
-            if target in tags:
-                fallback.append(artist)
-        # Underground artists first, then fallback
-        result = result + fallback
-
-    return result
 
 def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
     """
