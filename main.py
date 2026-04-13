@@ -22,7 +22,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.4)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.5)"
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -959,6 +959,86 @@ def _compute_underground_score(artist, target_genre):
         score += 1
 
     return score
+
+
+def _compute_underground_score_trail(artist):
+    """
+    Trail-specific underground scoring (no genre requirement).
+    Filters by listeners + underground/mainstream tags only.
+    Allows genre exploration while maintaining underground focus.
+    """
+    tags_norm, tags_comp, listeners = _get_artist_tags_listeners(artist)
+
+    if not tags_norm:
+        return -999
+
+    score = 0  # no base score (genre match not required for trail)
+
+    # Boost for rare/underground tags
+    if any(t in _UNDERGROUND_RARE_TAGS for t in tags_norm):
+        score += 3  # stronger boost since no genre anchor
+
+    # Listener-based scoring (aggressive thresholds)
+    if 0 < listeners < 50_000:
+        score += 3  # very underground
+    elif listeners < 100_000:
+        score += 2  # underground
+    elif listeners < 300_000:
+        score += 1  # semi-underground
+    else:
+        score -= 2  # mainstream
+
+    # Penalize mainstream context tags (strong penalty)
+    if any(t in _UNDERGROUND_BAD_CONTEXT for t in tags_norm):
+        score -= 4  # heavier penalty to filter mainstream
+
+    # Reward rich tagging
+    if len(tags_norm) >= 5:
+        score += 1
+
+    return score
+
+
+def _filter_underground_artists_trail(artists):
+    """
+    Filter artists for Trail using genre-agnostic underground scoring.
+    Progressive relaxation with lower thresholds (Trail is exploratory).
+    """
+    log.info(f"[Trail Underground] Scoring {len(artists)} similar artists")
+
+    # Score all artists
+    scored = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futures = {ex.submit(_compute_underground_score_trail, a): a for a in artists}
+        for f in as_completed(futures):
+            artist = futures[f]
+            try:
+                score = f.result()
+                if score > -999:
+                    scored.append((artist, score))
+            except Exception:
+                pass
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    
+    # Adaptive thresholds for Trail (more permissive than genre-based)
+    thresholds = [4, 3, 2, 1, 0]  # include 0 for neutral artists
+    for threshold in thresholds:
+        filtered = [(a, s) for a, s in scored if s >= threshold]
+        if len(filtered) >= 30:  # lower requirement than genre (40)
+            result = [a for a, _ in filtered[:100]]
+            log.info(f"[Trail Underground] {len(result)} artists passed (threshold={threshold})")
+            return result
+    
+    # Use all scored artists
+    if len(scored) >= 30:
+        result = [a for a, _ in scored[:100]]
+        log.info(f"[Trail Underground] Using all {len(result)} scored artists")
+        return result
+    
+    # Final fallback: keep all (Trail should be exploratory)
+    log.info(f"[Trail Underground] Insufficient scored ({len(scored)}) — using all artists")
+    return artists[:100]
 
 
 def _filter_underground_artists(artists, genre, decades=None):
@@ -2728,11 +2808,11 @@ def handle_buttons(update, context):
             else:
                 names = _expand_trail(artist, hops)
             
-            # Apply underground scoring filter
+            # Apply underground scoring filter (Trail-specific: no genre requirement)
             if message:
                 _safe_reply(message, "🔍 Filtering for quality…")
             original_count = len(names)
-            names = _filter_underground_artists(names, artist)
+            names = _filter_underground_artists_trail(names)
             if len(names) < 10:
                 log.info(f"[Trail] Underground filter too strict ({len(names)}/{original_count}) — using all artists")
                 names = _expand_trail(artist, hops)  # fallback to unfiltered
