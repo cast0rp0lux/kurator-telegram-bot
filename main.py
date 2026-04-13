@@ -22,7 +22,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.2)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v5.3)"
 
 # ─── Environment ──────────────────────────────────────────────────────────────
 LASTFM_USER    = "burbq"
@@ -917,15 +917,31 @@ def _compute_underground_score(artist, target_genre):
     return score
 
 
-def _filter_underground_artists(artists, genre):
+def _filter_underground_artists(artists, genre, decades=None):
     """
     Score and filter artists by underground quality with adaptive thresholds.
-    Progressive relaxation: tries [5, 4, 3, 2, 1] until >= 40 artists found.
-    Falls back to genre-match-only if still insufficient.
+    For niche genres (pool < 60), expands pool with Last.fm seeds.
+    Progressive relaxation with dynamic thresholds based on pool size.
     Uses concurrent calls via ThreadPoolExecutor.
     """
-    log.info(f"[Underground] Scoring {len(artists)} artists for '{genre}'")
-
+    pool_size = len(artists)
+    log.info(f"[Underground] Initial pool: {pool_size} artists for '{genre}'")
+    
+    # Detect niche genre and expand pool if needed
+    if pool_size < 60 and decades:
+        log.info(f"[Niche genre detected] Expanding pool for '{genre}'")
+        try:
+            extra = _get_era_artists_from_lastfm(genre, decades, max_artists=100)
+            # Merge without duplicates
+            artists_set = set(artists)
+            for artist in extra:
+                if artist not in artists_set:
+                    artists.append(artist)
+                    artists_set.add(artist)
+            log.info(f"[Underground] Expanded pool: {len(artists)} artists (added {len(artists) - pool_size})")
+        except Exception as e:
+            log.error(f"[Underground] Pool expansion failed: {e}")
+    
     # Score all artists once
     scored = []
     with ThreadPoolExecutor(max_workers=6) as ex:
@@ -941,17 +957,30 @@ def _filter_underground_artists(artists, genre):
 
     scored.sort(key=lambda x: x[1], reverse=True)
     
+    # Dynamic threshold based on pool size
+    current_pool = len(scored)
+    if current_pool >= 80:
+        min_required = 40
+    elif current_pool >= 50:
+        min_required = 30
+    elif current_pool >= 30:
+        min_required = 20
+    else:
+        min_required = 12
+    
+    log.info(f"[Underground] Pool size: {current_pool}, min required: {min_required}")
+    
     # Adaptive thresholds: try [5, 4, 3, 2, 1] until we have enough
     thresholds = [5, 4, 3, 2, 1]
     for threshold in thresholds:
         filtered = [(a, s) for a, s in scored if s >= threshold]
-        if len(filtered) >= 40:
+        if len(filtered) >= min_required:
             result = [a for a, _ in filtered[:100]]  # cap at 100
             log.info(f"[Underground] {len(result)} artists passed (threshold={threshold})")
             return result
     
-    # Use all scored artists if we still don't have 40
-    if len(scored) >= 40:
+    # Use all scored artists if we reached the dynamic minimum
+    if len(scored) >= min_required:
         result = [a for a, _ in scored[:100]]
         log.info(f"[Underground] Using all {len(result)} scored artists")
         return result
@@ -2032,8 +2061,10 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
         history_size = len(history.get("tracks", {}))
         if history_size > 600:
             short_warning = f"\nHistory is getting full — use /clear to start fresh.\n"
-        else:
-            short_warning = f"\nOnly {len(tracks)} tracks found for this genre and era combination.\n"
+        elif len(tracks) >= 25:
+            short_warning = f"\nDeep cut selection — {len(tracks)} tracks found.\n"
+        elif len(tracks) < 25:
+            short_warning = f"\nTight scene — {len(tracks)} essential tracks.\n"
     key        = _store_tracks(tracks, title=title)
     track_list = "\n".join(tracks)
 
@@ -2717,7 +2748,7 @@ def handle_buttons(update, context):
             # Apply underground scoring filter
             if message:
                 _safe_reply(message, "🔍 Filtering for quality…")
-            filtered_pool = _filter_underground_artists(filtered_pool, style)
+            filtered_pool = _filter_underground_artists(filtered_pool, style, decades)
             if len(filtered_pool) < 10:
                 filtered_pool = pool  # safety fallback
 
