@@ -2471,10 +2471,10 @@ def genre_command(update, context):
         tag = " ".join(context.args)
         _pending_gen[chat_id] = {"action": f"build|{tag}", "back": "cmd|explore_menu"}
         _pending_decades.pop(chat_id, None)
-        _get_relevant_decades(tag)  # warm up relevant decades for this genre
         msg.reply_text(
-            f"🎸 {tag.title()}\n\nSelect a decade:",
+            f"🎸 {tag.title()}",
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍌 All Time",        callback_data="decade_confirm")],
                 [InlineKeyboardButton("📅 Select a decade", callback_data="decade_open")],
                 [InlineKeyboardButton("← Back",             callback_data="cmd|explore_menu")],
             ])
@@ -3081,18 +3081,6 @@ def handle_buttons(update, context):
         elif gen_action.startswith("build|"):
             style = gen_action.split("|", 1)[1]
 
-            # Era always required for genres
-            if not decades:
-                _pending_gen[chat_id] = {"action": gen_action, "back": "cmd|explore_menu"}
-                query.edit_message_text(
-                    f"🎸 {style.title()}\n\nSelect a decade:",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📅 Select a decade", callback_data="decade_open")],
-                        [InlineKeyboardButton("← Back",             callback_data="cmd|explore_menu")],
-                    ])
-                )
-                return
-
             if _is_cancelled(chat_id):
                 return
 
@@ -3100,11 +3088,11 @@ def handle_buttons(update, context):
             sent, timer = _working_message(message, "🎸 Still building…", delay=50)
             _register_timer(chat_id, sent, timer)
 
-            # v5.0 POC — use MusicBrainz tag search to simulate Oracle query
-            # In production: SELECT artists FROM oracle WHERE genre=style AND era=decades
-            lo = min(DECADE_YEARS[d][0] for d in decades)
-            hi = max(DECADE_YEARS[d][1] for d in decades)
-            decade_year_range = (lo, hi)
+            # decade_year_range=None means All Time (no year filter)
+            decade_year_range = (
+                min(DECADE_YEARS[d][0] for d in decades),
+                max(DECADE_YEARS[d][1] for d in decades)
+            ) if decades else None
 
             pool = _mb_get_artists_by_genre(style, decades, limit=200)
 
@@ -3740,10 +3728,10 @@ def handle_buttons(update, context):
         style = value
         _pending_decades.pop(chat_id, None)
         _pending_gen[chat_id] = {"action": f"build|{style}", "back": f"map_back|{chat_id}"}
-        relevant = _get_relevant_decades(style)
         query.edit_message_text(
-            f"🎸 {style.title()}\n\nSelect a decade:",
+            f"🎸 {style.title()}",
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍌 All Time",        callback_data="decade_confirm")],
                 [InlineKeyboardButton("📅 Select a decade", callback_data="decade_open")],
                 [InlineKeyboardButton("← Back",             callback_data=f"map_back|{chat_id}")],
             ])
@@ -3943,10 +3931,10 @@ def handle_text_reply(update, context):
         tag = text.lower().strip()
         _pending_gen[chat_id] = {"action": f"build|{tag}", "back": "cmd|explore_menu"}
         _pending_decades.pop(chat_id, None)
-        relevant = _get_relevant_decades(tag)
         msg.reply_text(
-            f"🎸 {tag.title()}\n\nSelect a decade:",
+            f"🎸 {tag.title()}",
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍌 All Time",        callback_data="decade_confirm")],
                 [InlineKeyboardButton("📅 Select a decade", callback_data="decade_open")],
                 [InlineKeyboardButton("← Back",             callback_data="cmd|explore_menu")],
             ])
