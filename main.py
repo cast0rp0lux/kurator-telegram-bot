@@ -22,10 +22,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.4)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.5)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.5": {
+        "date": "2026-04-14",
+        "changes": [
+            "Filtros underground más permisivos para géneros nicho",
+            "500k-1M listeners: penalización -3 (antes -4), score=1 pasa threshold 1",
+            "Hard cap subido de 750k a 1M listeners",
+            "Expansión de pool niche: umbral subido de 60 a 80 artistas"
+        ],
+        "technical": [
+            "_compute_underground_score: listeners 500k-1M → -3 (era -4)",
+            "_filter_underground_artists: hard cap 750k→1M en threshold <=2",
+            "_filter_underground_artists: expansión niche si pool < 80 (era 60)"
+        ]
+    },
     "6.4": {
         "date": "2026-04-14",
         "changes": [
@@ -1111,11 +1125,11 @@ def _compute_underground_score(artist, target_genre):
     elif listeners < 300_000:
         score += 1  # semi-underground
     elif listeners < 500_000:
-        score -= 2  # moderado (300k-500k)
+        score -= 2  # moderado (300k-500k): score = 2, pasa threshold 2
     elif listeners < 1_000_000:
-        score -= 4  # mainstream (500k-1M): score resultante = 0, no pasa threshold 1
+        score -= 3  # semi-mainstream (500k-1M): score = 1, pasa threshold 1
     elif listeners < 3_000_000:
-        score -= 5  # very mainstream
+        score -= 5  # mainstream (1M-3M): score = -1, rechazado
     else:
         score -= 8  # mega mainstream (Beatles, Floyd, Queen level)
 
@@ -1140,8 +1154,8 @@ def _filter_underground_artists(artists, genre, decades=None):
     pool_size = len(artists)
     log.info(f"[Underground] Initial pool: {pool_size} artists for '{genre}'")
     
-    # Detect niche genre and expand pool if needed
-    if pool_size < 60 and decades:
+    # Detect niche genre and expand pool if needed (umbral subido a 80 para géneros nicho)
+    if pool_size < 80 and decades:
         log.info(f"[Niche genre detected] Expanding pool for '{genre}'")
         try:
             extra = _get_era_artists_from_lastfm(genre, decades, max_artists=100)
@@ -1196,7 +1210,7 @@ def _filter_underground_artists(artists, genre, decades=None):
             # _artist_listeners_cache ya fue poblado durante el scoring (sin llamadas extra)
             filtered = [(a, s) for a, s in scored
                         if s >= threshold
-                        and _artist_listeners_cache.get(a, 0) <= 750_000]
+                        and _artist_listeners_cache.get(a, 0) <= 1_000_000]
         else:
             filtered = [(a, s) for a, s in scored if s >= threshold]
         if len(filtered) >= min_required:
