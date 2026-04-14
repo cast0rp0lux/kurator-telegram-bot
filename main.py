@@ -1158,7 +1158,7 @@ def _filter_underground_artists(artists, genre, decades=None):
     log.info(f"[Underground] Initial pool: {pool_size} artists for '{genre}'")
     
     # Detect niche genre and expand pool if needed (umbral subido a 80 para géneros nicho)
-    if pool_size < 80 and decades:
+    if pool_size < 80:
         log.info(f"[Niche genre detected] Expanding pool for '{genre}'")
         try:
             extra = _get_era_artists_from_lastfm(genre, decades, max_artists=150)
@@ -1169,8 +1169,8 @@ def _filter_underground_artists(artists, genre, decades=None):
                     artists.append(artist)
                     artists_set.add(artist)
             log.info(f"[Underground] After Last.fm expansion: {len(artists)} artists (added {len(artists) - pool_size})")
-            # Second pass: Discogs if pool still small
-            if len(artists) < 30:
+            # Second pass: Discogs if pool still small (requires decades — skip for All Time)
+            if len(artists) < 30 and decades:
                 log.info(f"[Underground] Pool still small ({len(artists)}) — trying Discogs")
                 try:
                     discogs_extra = _get_era_artists_from_discogs(
@@ -3177,7 +3177,7 @@ def handle_buttons(update, context):
             _update_user_genre_profile(chat_id, style, decades)
 
             _cancel_working(sent, timer)
-            era_tag2 = f" — {_decade_label_from_set(decades)}"
+            era_tag2 = f" — {_decade_label_from_set(decades)}" if decades else " — ∞ All Time"
             from_map = chat_id in map_memory
             send_playlist(message, tracks, title=f"🎸 {style.title()}{era_tag2}",
                           branded=False, chat_id=chat_id, size=GENRE_PLAYLIST_SIZE,
