@@ -2252,7 +2252,6 @@ def _export_collapsed_buttons(key, map_chat_id=None):
                 f"🗺️ Back to {display_name[:22]}",
                 callback_data=f"map_back|{map_chat_id}"
             )])
-    buttons.append([InlineKeyboardButton("🦍 Main menu", callback_data="cmd|menu")])
     return buttons
 
 def _export_buttons(key, map_chat_id=None):
@@ -2263,7 +2262,6 @@ def _export_buttons(key, map_chat_id=None):
         [InlineKeyboardButton("🟢 Open Spotify links",       callback_data=f"sp_expand|{key}|0")],
         [InlineKeyboardButton("← Back",                      callback_data=f"export_collapse|{key}")],
     ]
-    return buttons
     return buttons
 
 # ─── Playlist sender ──────────────────────────────────────────────────────────
