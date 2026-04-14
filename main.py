@@ -2471,7 +2471,7 @@ def _genre_era_prompt(responder, chat_id, style, back_cb):
     responder(
         f"🎸 {style.title()}",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🍌 All Time",        callback_data="decade_confirm")],
+            [InlineKeyboardButton("∞ All Time",         callback_data="decade_alltime")],
             [InlineKeyboardButton("📅 Select a decade", callback_data="decade_open")],
             [InlineKeyboardButton("← Back",             callback_data=back_cb)],
         ])
@@ -3194,6 +3194,39 @@ def handle_buttons(update, context):
         title_map = {"playlist": "🎵 Kurator's Playlist", "dig": "⛏️ Kurator's Dig", "rare": "💎 Kurator's Rare"}
         title = title_map.get(parts[0], "Generate playlist")
         _show_era_choice(query, chat_id, title, gen_action, back_cb)
+
+    # ── decade_alltime: All Time confirmation screen ──────────────────────────
+    elif action == "decade_alltime":
+        _pending_decades.pop(chat_id, None)  # clear any selected decades → All Time
+        pending = _pending_gen.get(chat_id, {})
+        gen_action = pending.get("action", "")
+        back_cb = pending.get("back", "cmd|explore_menu")
+        if gen_action.startswith("build|"):
+            style = gen_action.split("|", 1)[1]
+            header = f"🎸 {style.title()} — ∞ All Time"
+        else:
+            header = "∞ All Time"
+        query.edit_message_text(
+            header,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="decade_confirm")],
+                [InlineKeyboardButton("← Back",               callback_data="decade_era_back")],
+            ])
+        )
+
+    # ── decade_era_back: return to era choice (∞ / 📅) ───────────────────────
+    elif action == "decade_era_back":
+        pending = _pending_gen.get(chat_id, {})
+        gen_action = pending.get("action", "")
+        back_cb = pending.get("back", "cmd|explore_menu")
+        if gen_action.startswith("build|"):
+            style = gen_action.split("|", 1)[1]
+            _genre_era_prompt(query.edit_message_text, chat_id, style, back_cb)
+        else:
+            parts = gen_action.split("|", 1)
+            title_map = {"playlist": "🎵 Kurator's Playlist", "dig": "⛏️ Kurator's Dig", "rare": "💎 Kurator's Rare"}
+            title = title_map.get(parts[0], "Generate playlist")
+            _show_era_choice(query, chat_id, title, gen_action, back_cb)
 
     # ── onboarding ────────────────────────────────────────────────────────────
     elif action == "onboard":
