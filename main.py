@@ -22,10 +22,21 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.2)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.3)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.3": {
+        "date": "2026-04-14",
+        "changes": [
+            "Comando /cancel oculto: cancela operación en curso y limpia estado"
+        ],
+        "technical": [
+            "_cancel_flags dict + _is_cancelled/_set_cancel/_clear_cancel helpers",
+            "Check de cancel al inicio de build| y tras obtener pool de artistas",
+            "_clear_cancel al arrancar nueva generación (decade_confirm)"
+        ]
+    },
     "6.2": {
         "date": "2026-04-14",
         "changes": [
@@ -189,6 +200,18 @@ _pending_map_msgs  = {}
 # Recently used artists — prevents repetition across consecutive playlists
 _recent_artists    = []
 RECENT_ARTISTS_MAX = 60
+
+# ─── Cancel flags ─────────────────────────────────────────────────────────────
+_cancel_flags = {}  # chat_id → bool
+
+def _is_cancelled(chat_id):
+    return _cancel_flags.get(chat_id, False)
+
+def _set_cancel(chat_id):
+    _cancel_flags[chat_id] = True
+
+def _clear_cancel(chat_id):
+    _cancel_flags.pop(chat_id, None)
 
 # ─── File paths ───────────────────────────────────────────────────────────────
 HISTORY_FILE   = "history.json"
@@ -2458,6 +2481,14 @@ def status(update, context):
 def reset(update, context):
     _do_reset(update.message)
 
+def cancel_command(update, context):
+    """Cancela cualquier operación en curso y limpia el estado. Oculto."""
+    chat_id = update.effective_chat.id
+    _set_cancel(chat_id)
+    _pending_gen.pop(chat_id, None)
+    _pending_decades.pop(chat_id, None)
+    update.message.reply_text("✗ Cancelled.", reply_markup=main_menu_markup())
+
 # ─── Map renderer ─────────────────────────────────────────────────────────────
 
 def _render_map(message, artist_query, chat_id):
@@ -2823,6 +2854,7 @@ def handle_buttons(update, context):
 
     # ── decade_confirm: execute pending generation ────────────────────────────
     elif action == "decade_confirm":
+        _clear_cancel(chat_id)  # limpiar cualquier cancel previo al arrancar nueva generación
         pending    = _pending_gen.pop(chat_id, {})
         gen_action = pending.get("action", "")
         decades    = _pending_decades.pop(chat_id, set()) or None
@@ -2931,6 +2963,9 @@ def handle_buttons(update, context):
                 )
                 return
 
+            if _is_cancelled(chat_id):
+                return
+
             query.edit_message_text(f"🎸 Building {style.title()}{era_tag} playlist…")
             sent, timer = _working_message(message, "🎸 Still building…", delay=50)
 
@@ -2953,6 +2988,10 @@ def handle_buttons(update, context):
                 pool = _get_era_artists_from_discogs(decades, mode="playlist",
                                                       max_artists=100,
                                                       style_override=_resolve_genre_styles(style, decades))
+
+            if _is_cancelled(chat_id):
+                _cancel_working(sent, timer)
+                return
 
             random.shuffle(pool)
             global _recent_artists
@@ -3722,6 +3761,7 @@ dp.add_handler(CommandHandler("map",      map_command))  # alias por compatibili
 dp.add_handler(CommandHandler("tags",     tags))
 dp.add_handler(CommandHandler("status",   status))
 dp.add_handler(CommandHandler("reset",    reset))
+dp.add_handler(CommandHandler("cancel",   cancel_command))  # oculto — no en set_my_commands
 dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text_reply))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
 
