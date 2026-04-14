@@ -2451,7 +2451,7 @@ def map_command(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     if not context.args:
-        msg.reply_text("🗺️ Map\n\nSend: /map <artist>")
+        msg.reply_text("🔍 Explore\n\nSend: /explore <artist>")
         return
     artist_query = " ".join(context.args)
 
