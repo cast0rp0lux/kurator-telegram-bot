@@ -2329,24 +2329,15 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
         disable_web_page_preview=True,
     )
 
-    # Export buttons sent separately (no text, just buttons)
-    _EXPORT_GHOST = "\u200b"  # Zero Width Space — invisible in Telegram
+    # Export buttons sent separately — Telegram requires non-empty text, use minimal dot
     try:
         message.reply_text(
-            _EXPORT_GHOST,
+            "·",
             reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
         )
         log.info(f"[Export] OK (key={key[:20]})")
     except Exception as _export_err:
-        log.error(f"[Export] Error con \\u200b: {_export_err}")
-        try:
-            message.reply_text(
-                "·",
-                reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
-            )
-            log.info("[Export] Fallback · OK")
-        except Exception as _export_err2:
-            log.error(f"[Export] Fallback también falló: {_export_err2}")
+        log.error(f"[Export] Error: {_export_err}")
 
 # ─── Persistent bottom keyboard ───────────────────────────────────────────────
 
@@ -3702,23 +3693,19 @@ def handle_buttons(update, context):
 
     # ── export_expand: show full export options ───────────────────────────────
     elif action == "export_expand":
-        key = value
-        query.edit_message_text(
-            "\u200b",
-            reply_markup=InlineKeyboardMarkup(_export_buttons(key))
+        query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup(_export_buttons(value))
         )
 
     # ── export_collapse: back to single Export button ─────────────────────────
     elif action == "export_collapse":
-        key = value
-        query.edit_message_text(
-            "\u200b",
-            reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key))
+        query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(value))
         )
 
     # ── export_back ───────────────────────────────────────────────────────────
     elif action == "export_back":
-        query.edit_message_text("\u200b",
+        query.edit_message_reply_markup(
             reply_markup=InlineKeyboardMarkup(_export_buttons(value)))
 
     # ── sp_expand ─────────────────────────────────────────────────────────────
