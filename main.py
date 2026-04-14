@@ -2725,11 +2725,6 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
             nav.append(InlineKeyboardButton("Next →", callback_data=f"tags_page|{page+1}"))
         if nav:
             buttons.append(nav)
-        if tag_blacklist:
-            buttons.append([InlineKeyboardButton(
-                f"🔄 Restore {len(tag_blacklist)} hidden tag(s)",
-                callback_data="tags_restore_open"
-            )])
         buttons.append([
             InlineKeyboardButton("✏️ Edit", callback_data=f"tags_edit|{page}"),
             InlineKeyboardButton("← Back",  callback_data="cmd|explore_menu"),
