@@ -22,10 +22,21 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.3)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.4)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.4": {
+        "date": "2026-04-14",
+        "changes": [
+            "/cancel ahora para también el mensaje 'Still building...' inmediatamente"
+        ],
+        "technical": [
+            "_active_timers dict registra working message timer por chat_id",
+            "_set_cancel para el timer activo vía _active_timers[chat_id]",
+            "_register_timer llamado en los 4 handlers de generación principales"
+        ]
+    },
     "6.3": {
         "date": "2026-04-14",
         "changes": [
@@ -202,16 +213,30 @@ _recent_artists    = []
 RECENT_ARTISTS_MAX = 60
 
 # ─── Cancel flags ─────────────────────────────────────────────────────────────
-_cancel_flags = {}  # chat_id → bool
+_cancel_flags   = {}  # chat_id → bool
+_active_timers  = {}  # chat_id → (sent_dict, timer) — working message activo
 
 def _is_cancelled(chat_id):
     return _cancel_flags.get(chat_id, False)
 
 def _set_cancel(chat_id):
     _cancel_flags[chat_id] = True
+    # Parar el working message timer si hay uno activo para este chat
+    state = _active_timers.pop(chat_id, None)
+    if state:
+        sent, timer = state
+        sent["done"] = True
+        timer.cancel()
 
 def _clear_cancel(chat_id):
     _cancel_flags.pop(chat_id, None)
+
+def _register_timer(chat_id, sent, timer):
+    """Registra el working message timer para que /cancel pueda pararlo."""
+    _active_timers[chat_id] = (sent, timer)
+
+def _unregister_timer(chat_id):
+    _active_timers.pop(chat_id, None)
 
 # ─── File paths ───────────────────────────────────────────────────────────────
 HISTORY_FILE   = "history.json"
@@ -2887,6 +2912,7 @@ def handle_buttons(update, context):
             map_memory.pop(chat_id, None)
             query.edit_message_text(f"🎵 Selecting tracks{era_tag}…")
             sent, timer = _working_message(message, "🎵 Still selecting…", delay=50)
+            _register_timer(chat_id, sent, timer)
             if decades:
                 result = select_tracks_with_decades([], decades=decades, message=message, mode="playlist")
             else:
@@ -2897,6 +2923,7 @@ def handle_buttons(update, context):
         elif gen_action == "dig":
             query.edit_message_text(f"⛏️ Digging{era_tag}…")
             sent, timer = _working_message(message, "⛏️ Going deeper…", delay=50)
+            _register_timer(chat_id, sent, timer)
             if decades:
                 result = select_tracks_with_decades([], decades=decades, message=message, mode="dig")
             else:
@@ -2907,6 +2934,7 @@ def handle_buttons(update, context):
         elif gen_action == "rare":
             query.edit_message_text(f"💎 Searching for hidden gems{era_tag}…")
             sent, timer = _working_message(message, "💎 Hunting for gems…", delay=50)
+            _register_timer(chat_id, sent, timer)
             if decades:
                 result = select_tracks_with_decades([], size=RARE_PLAYLIST_SIZE, decades=decades, message=message, mode="rare")
             else:
@@ -2968,6 +2996,7 @@ def handle_buttons(update, context):
 
             query.edit_message_text(f"🎸 Building {style.title()}{era_tag} playlist…")
             sent, timer = _working_message(message, "🎸 Still building…", delay=50)
+            _register_timer(chat_id, sent, timer)
 
             # v5.0 POC — use MusicBrainz tag search to simulate Oracle query
             # In production: SELECT artists FROM oracle WHERE genre=style AND era=decades
