@@ -22,10 +22,25 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.1)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.2)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.2": {
+        "date": "2026-04-14",
+        "changes": [
+            "Fix mainstream en géneros: safety fallback con cap 750k listeners",
+            "Fix fallback genre-match: usa attempted_names (no scored_names)",
+            "Botón ☰ hamburguesa nativo de Telegram vía set_my_commands",
+            "/explore como nuevo nombre de /map (🔍), /map sigue como alias"
+        ],
+        "technical": [
+            "ThreadPoolExecutor workers 6→4 en _filter_underground_artists",
+            "attempted_names trackea artistas procesados (incluso score -999)",
+            "Safety fallback aplica _artist_listeners_cache cap antes de restaurar pool",
+            "set_my_commands + setChatMenuButton type=commands al boot"
+        ]
+    },
     "6.1": {
         "date": "2026-04-13",
         "changes": [
@@ -1093,17 +1108,21 @@ def _filter_underground_artists(artists, genre, decades=None):
             log.error(f"[Underground] Pool expansion failed: {e}")
     
     # Score all artists once
+    # attempted_names: todos los artistas procesados (score cualquiera, incluido -999)
+    # Solo los artistas con excepción real quedan fuera, para el fallback genre-match
+    attempted_names = set()
     scored = []
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:  # 4 workers: menos rate limiting en Last.fm
         futures = {ex.submit(_compute_underground_score, a, genre): a for a in artists}
         for f in as_completed(futures):
             artist = futures[f]
             try:
                 score = f.result()
-                if score > -999:  # include all scored artists
+                attempted_names.add(artist)  # procesado correctamente (cualquier score)
+                if score > -999:
                     scored.append((artist, score))
             except Exception:
-                pass
+                pass  # excepción real → no en attempted_names → elegible para fallback
 
     scored.sort(key=lambda x: x[1], reverse=True)
     
@@ -1137,24 +1156,25 @@ def _filter_underground_artists(artists, genre, decades=None):
             log.info(f"[Underground] {len(result)} artists passed (threshold={threshold})")
             return result
     
-    # Final fallback — keep only positive scores, then genre-match if still needed
+    # Final fallback — keep only positive scores, then genre-match only for un-attempted artists
     log.info(f"[Underground] Insufficient scored ({len(scored)}) — genre-match fallback")
     # CRITICAL: Never use artists with negative score
     positive_scored = [(a, s) for a, s in scored if s >= 1]
     result = [a for a, _ in positive_scored]  # start with positive scores only
     target_norm, target_comp = normalize_tag_extended(genre)
-    scored_names = {a for a, _ in scored}
-    
-    # Add more artists via genre-match only if needed
+
+    # Solo añadir artistas que fallaron con excepción real (no los que obtuvieron score -999)
+    # attempted_names incluye todos los procesados correctamente (incluso score -999)
     for artist in artists:
         if len(result) >= 100:
             break
-        if artist in scored_names:
+        if artist in attempted_names:  # ya fue procesado (score -999 o mayor) → skip
             continue
+        # Solo llega aquí si hubo excepción durante scoring — re-intentar
         tags_norm, tags_comp, _ = _get_artist_tags_listeners(artist)
         if target_norm in tags_norm or target_comp in tags_comp:
             result.append(artist)
-    
+
     log.info(f"[Underground] Final pool: {len(result)} artists (fallback with score >= 1)")
     return result[:100]
 
@@ -2947,7 +2967,12 @@ def handle_buttons(update, context):
                 _safe_reply(message, "🔍 Filtering for quality…")
             filtered_pool = _filter_underground_artists(filtered_pool, style, decades)
             if len(filtered_pool) < 10:
-                filtered_pool = pool  # safety fallback
+                # Safety fallback con cap — no restaurar pool sin filtrar completamente
+                cap_fallback = [a for a in pool
+                                if _artist_listeners_cache.get(a, 0) <= 750_000
+                                or _artist_listeners_cache.get(a, 0) == 0]
+                filtered_pool = cap_fallback if len(cap_fallback) >= 5 else pool
+                log.info(f"[Oracle-POC] Safety fallback: {len(filtered_pool)} artists (cap applied)")
 
             log.info(f"[Oracle-POC] Final pool: {len(filtered_pool)} artists for '{style}' {decades}")
 
@@ -3692,12 +3717,35 @@ dp.add_handler(CommandHandler("changelog", changelog_command))
 dp.add_handler(CommandHandler("playlist",  playlist))
 dp.add_handler(CommandHandler("dig",      dig))
 dp.add_handler(CommandHandler("rare",     rare))
-dp.add_handler(CommandHandler("map",      map_command))
+dp.add_handler(CommandHandler("explore",  map_command))  # nuevo nombre principal
+dp.add_handler(CommandHandler("map",      map_command))  # alias por compatibilidad
 dp.add_handler(CommandHandler("tags",     tags))
 dp.add_handler(CommandHandler("status",   status))
 dp.add_handler(CommandHandler("reset",    reset))
 dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text_reply))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
+
+# Registrar comandos para activar el botón ☰ nativo de Telegram
+from telegram import BotCommand
+try:
+    updater.bot.set_my_commands([
+        BotCommand("start",    "🦍 Main menu"),
+        BotCommand("playlist", "🎵 Kurator's Playlist"),
+        BotCommand("dig",      "⛏️ Dig deeper"),
+        BotCommand("rare",     "💎 Rare finds"),
+        BotCommand("explore",  "🔍 Explore an artist"),
+        BotCommand("tags",     "🏷️ Browse tags"),
+        BotCommand("status",   "📊 My stats"),
+        BotCommand("help",     "❓ Help"),
+    ])
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setChatMenuButton",
+        json={"menu_button": {"type": "commands"}},
+        timeout=10
+    )
+    log.info("Telegram commands registered")
+except Exception as e:
+    log.warning(f"Failed to register commands: {e}")
 
 log.info(BOT_VERSION)
 print(BOT_VERSION)
