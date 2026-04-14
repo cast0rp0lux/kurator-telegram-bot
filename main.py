@@ -198,7 +198,7 @@ GENRE_PLAYLIST_SIZE = 50
 RARE_PLAYLIST_SIZE  = 50
 RARE_MAX_LISTENERS  = 500_000
 RARE_CANDIDATE_CAP  = 150
-TAGS_PAGE_SIZE      = 24
+TAGS_PAGE_SIZE      = 10
 CALLBACK_DATA_MAX   = 60
 TRACK_STORE_MAX     = 20
 TRACK_FETCH_LIMIT   = 50
@@ -215,7 +215,10 @@ DECADE_YEARS        = {
 }
 
 # Pending decade selections per chat_id: {chat_id: set of selected decades}
-_pending_decades   = {}
+_pending_decades      = {}
+# Pending tag multi-select state per chat_id
+_pending_tag_deletes  = {}   # chat_id → set of tags selected for deletion
+_pending_tag_restores = {}   # chat_id → set of tags selected for restore
 # Pending generation actions per chat_id: {chat_id: {"action": str, "data": dict}}
 _pending_gen       = {}
 # Navigation history per chat_id: [{artist, display_name, styles, info}]
@@ -1158,14 +1161,29 @@ def _filter_underground_artists(artists, genre, decades=None):
     if pool_size < 80 and decades:
         log.info(f"[Niche genre detected] Expanding pool for '{genre}'")
         try:
-            extra = _get_era_artists_from_lastfm(genre, decades, max_artists=100)
+            extra = _get_era_artists_from_lastfm(genre, decades, max_artists=150)
             # Merge without duplicates
             artists_set = set(artists)
             for artist in extra:
                 if artist not in artists_set:
                     artists.append(artist)
                     artists_set.add(artist)
-            log.info(f"[Underground] Expanded pool: {len(artists)} artists (added {len(artists) - pool_size})")
+            log.info(f"[Underground] After Last.fm expansion: {len(artists)} artists (added {len(artists) - pool_size})")
+            # Second pass: Discogs if pool still small
+            if len(artists) < 30:
+                log.info(f"[Underground] Pool still small ({len(artists)}) — trying Discogs")
+                try:
+                    discogs_extra = _get_era_artists_from_discogs(
+                        decades, mode="playlist", max_artists=60,
+                        style_override=_resolve_genre_styles(genre, decades)
+                    )
+                    for a in discogs_extra:
+                        if a not in artists_set:
+                            artists.append(a)
+                            artists_set.add(a)
+                    log.info(f"[Underground] After Discogs: {len(artists)} artists")
+                except Exception as e2:
+                    log.error(f"[Underground] Discogs expansion failed: {e2}")
         except Exception as e:
             log.error(f"[Underground] Pool expansion failed: {e}")
     
@@ -1197,8 +1215,8 @@ def _filter_underground_artists(artists, genre, decades=None):
     elif current_pool >= 30:
         min_required = 20
     else:
-        min_required = 12
-    
+        min_required = 8   # small niche pool — take what we have
+
     log.info(f"[Underground] Pool size: {current_pool}, min required: {min_required}")
     
     # Universal rule: progressive thresholds [5,4,3,2,1] → always underground first
@@ -2312,10 +2330,22 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
     )
 
     # Export buttons sent separately (no text, just buttons)
-    message.reply_text(
-        "\u2800",  # Braille Pattern Blank — invisible pero aceptado por Telegram como texto válido
-        reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
-    )
+    try:
+        message.reply_text(
+            "\u2800",  # Braille Pattern Blank — invisible but valid for Telegram
+            reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
+        )
+        log.info(f"[Export] OK (key={key[:20]})")
+    except Exception as _export_err:
+        log.error(f"[Export] Error con \\u2800: {_export_err}")
+        try:
+            message.reply_text(
+                "📡",
+                reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
+            )
+            log.info("[Export] Fallback 📡 OK")
+        except Exception as _export_err2:
+            log.error(f"[Export] Fallback también falló: {_export_err2}")
 
 # ─── Persistent bottom keyboard ───────────────────────────────────────────────
 
@@ -2640,19 +2670,21 @@ def _is_valid_tag(tag):
         return False
     return True
 
-def _build_tags_buttons(sorted_tags, page, edit_mode=False):
+def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
     start     = page * TAGS_PAGE_SIZE
     end       = start + TAGS_PAGE_SIZE
     page_tags = sorted_tags[start:end]
     buttons   = []
     total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
     if edit_mode:
-        # Two columns in edit mode
+        # Two columns — 🟡/⚪ multiselect instead of immediate ❌ delete
+        sel = _pending_tag_deletes.get(chat_id, set()) if chat_id else set()
         row = []
         for tag, count in page_tags:
+            tick = "🟡" if tag in sel else "⚪"
             row.append(InlineKeyboardButton(
-                f"❌ {tag}",
-                callback_data=safe_callback(f"tag_del|{page}|{tag}")
+                f"{tick} {tag.title()} ({count})",
+                callback_data=safe_callback(f"tag_toggle|{page}|{tag}")
             ))
             if len(row) == 2:
                 buttons.append(row)
@@ -2666,7 +2698,16 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False):
             nav.append(InlineKeyboardButton("Next →", callback_data=f"tags_edit|{page+1}"))
         if nav:
             buttons.append(nav)
-        buttons.append([InlineKeyboardButton("🔄 Restore deleted tags", callback_data="tags_restore_confirm")])
+        if sel:
+            buttons.append([InlineKeyboardButton(
+                f"🗑️ Delete {len(sel)} selected",
+                callback_data=f"tag_del_confirm|{page}"
+            )])
+        if tag_blacklist:
+            buttons.append([InlineKeyboardButton(
+                f"🔄 Restore {len(tag_blacklist)} hidden tag(s)",
+                callback_data="tags_restore_open"
+            )])
         buttons.append([InlineKeyboardButton("✅ Done", callback_data=f"tags_page|{page}")])
     else:
         row = []
@@ -2684,13 +2725,43 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False):
             nav.append(InlineKeyboardButton("Next →", callback_data=f"tags_page|{page+1}"))
         if nav:
             buttons.append(nav)
+        if tag_blacklist:
+            buttons.append([InlineKeyboardButton(
+                f"🔄 Restore {len(tag_blacklist)} hidden tag(s)",
+                callback_data="tags_restore_open"
+            )])
         buttons.append([
             InlineKeyboardButton("✏️ Edit", callback_data=f"tags_edit|{page}"),
             InlineKeyboardButton("← Back",  callback_data="cmd|explore_menu"),
         ])
     return buttons
 
-def _render_tags(message, page=0, edit_mode=False):
+
+def _build_restore_buttons(chat_id):
+    """Multiselect view for restoring hidden tags (🟡/⚪ per tag)."""
+    sel     = _pending_tag_restores.get(chat_id, set())
+    buttons = []
+    row     = []
+    for tag in sorted(tag_blacklist):
+        tick = "🟡" if tag in sel else "⚪"
+        row.append(InlineKeyboardButton(
+            f"{tick} {tag.title()}",
+            callback_data=safe_callback(f"tag_restore_toggle|{tag}")
+        ))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    if sel:
+        buttons.append([InlineKeyboardButton(
+            f"🔄 Restore {len(sel)} selected",
+            callback_data="tag_restore_exec"
+        )])
+    buttons.append([InlineKeyboardButton("← Back", callback_data="tags_edit|0")])
+    return buttons
+
+def _render_tags(message, page=0, edit_mode=False, chat_id=None):
     if not tag_index:
         message.reply_text("No tags collected yet.\n\nUse /map <artist> to start building your library.")
         return
@@ -2700,7 +2771,7 @@ def _render_tags(message, page=0, edit_mode=False):
     mode_label  = "  ✏️ Edit mode" if edit_mode else ""
     message.reply_text(
         f"🏷️ Tag collection — {len(sorted_tags)} genres (page {page+1}/{total_pages}){mode_label}",
-        reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page, edit_mode))
+        reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page, edit_mode, chat_id=chat_id))
     )
 
 # ─── Status + Reset ───────────────────────────────────────────────────────────
@@ -2715,7 +2786,7 @@ def _render_status(message):
         f"🙈 Hidden tags — {hidden}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🗑️ Clear history",       callback_data="cmd|clear_confirm")],
-            [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_confirm")],
+            [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_open")],
             [InlineKeyboardButton("🦍 Main menu",           callback_data="cmd|menu")],
         ])
     )
@@ -2847,7 +2918,7 @@ def handle_buttons(update, context):
                 f"🙈 Hidden tags — {hidden}",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🗑️ Clear history",       callback_data="cmd|clear_confirm")],
-                    [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_confirm")],
+                    [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_open")],
                     [InlineKeyboardButton("🦍 Main menu",           callback_data="cmd|menu")],
                 ])
             )
@@ -3047,10 +3118,9 @@ def handle_buttons(update, context):
                 _safe_reply(message, "🔍 Filtering for quality…")
             filtered_pool = _filter_underground_artists(filtered_pool, style, decades)
             if len(filtered_pool) < 10:
-                # Safety fallback con cap — no restaurar pool sin filtrar completamente
+                # Safety fallback — cap at 750k; listeners==0 means unscored, skip (could be mainstream)
                 cap_fallback = [a for a in pool
-                                if _artist_listeners_cache.get(a, 0) <= 750_000
-                                or _artist_listeners_cache.get(a, 0) == 0]
+                                if 0 < _artist_listeners_cache.get(a, 0) <= 750_000]
                 filtered_pool = cap_fallback if len(cap_fallback) >= 5 else pool
                 log.info(f"[Oracle-POC] Safety fallback: {len(filtered_pool)} artists (cap applied)")
 
@@ -3404,33 +3474,57 @@ def handle_buttons(update, context):
     # ── tags ──────────────────────────────────────────────────────────────────
     elif action == "tags_page":
         page        = int(value)
+        # Clear pending state when leaving edit mode
+        _pending_tag_deletes.pop(chat_id, None)
+        _pending_tag_restores.pop(chat_id, None)
         all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         query.edit_message_text(
             f"🏷️ Tag collection — {len(sorted_tags)} genres (page {page+1}/{total_pages})",
-            reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page))
+            reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page, chat_id=chat_id))
         )
 
     elif action == "tags_edit":
         page        = int(value)
+        # Clear any pending delete selection when entering/navigating edit mode
+        _pending_tag_deletes.pop(chat_id, None)
         all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         query.edit_message_text(
             f"🏷️ Tag collection — {len(sorted_tags)} genres (page {page+1}/{total_pages})  ✏️ Edit mode",
-            reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page, edit_mode=True))
+            reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page, edit_mode=True, chat_id=chat_id))
         )
 
-    elif action == "tag_del":
+    elif action == "tag_toggle":
+        # Multiselect: toggle a tag in/out of pending delete set
         parts_val = value.split("|", 1)
         page      = int(parts_val[0]) if len(parts_val) > 1 else 0
         tag       = parts_val[1] if len(parts_val) > 1 else value
-        if tag in tag_index:
-            del tag_index[tag]
+        sel = _pending_tag_deletes.setdefault(chat_id, set())
+        if tag in sel:
+            sel.discard(tag)
+        else:
+            sel.add(tag)
+        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+        sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
+        total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
+        query.edit_message_text(
+            f"🏷️ Tag collection — {len(sorted_tags)} genres (page {page+1}/{total_pages})  ✏️ Edit mode",
+            reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page, edit_mode=True, chat_id=chat_id))
+        )
+
+    elif action == "tag_del_confirm":
+        # Execute deletion of all selected tags
+        page   = int(value) if value else 0
+        to_del = _pending_tag_deletes.pop(chat_id, set())
+        for tag in to_del:
+            tag_index.pop(tag, None)
+            tag_blacklist.add(tag.lower())
+        if to_del:
             save_tag_index()
-        tag_blacklist.add(tag.lower())
-        save_tag_blacklist()
+            save_tag_blacklist()
         all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         if not sorted_tags:
@@ -3438,30 +3532,47 @@ def handle_buttons(update, context):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🦍 Main menu", callback_data="cmd|menu")]]))
             return
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
-        # Stay on same page, adjust if needed
         page = min(page, total_pages - 1)
         query.edit_message_text(
             f"🏷️ Tag collection — {len(sorted_tags)} genres (page {page+1}/{total_pages})  ✏️ Edit mode",
-            reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page, edit_mode=True))
+            reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, page, edit_mode=True, chat_id=chat_id))
         )
 
-    elif action == "tags_restore_confirm":
-        # Get current page from edit mode if available
-        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
-        sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
+    elif action == "tags_restore_open":
+        # Open multiselect view for restoring hidden tags
+        _pending_tag_restores[chat_id] = set()
+        if not tag_blacklist:
+            query.answer("No hidden tags to restore.")
+            return
         query.edit_message_text(
-            "🔄 Restore all tags?\n\n"
-            "All deleted tags will become visible again.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Yes, restore", callback_data="tags_restore")],
-                [InlineKeyboardButton("← Cancel",        callback_data="tags_edit|0")],
-            ])
+            "🔄 Select tags to restore:",
+            reply_markup=InlineKeyboardMarkup(_build_restore_buttons(chat_id))
         )
 
-    elif action == "tags_restore":
-        tag_blacklist.clear()
-        save_tag_blacklist()
-        _render_tags(message, page=0)
+    elif action == "tag_restore_toggle":
+        # Toggle a hidden tag in/out of pending restore set
+        tag = value
+        sel = _pending_tag_restores.setdefault(chat_id, set())
+        if tag in sel:
+            sel.discard(tag)
+        else:
+            sel.add(tag)
+        query.edit_message_text(
+            "🔄 Select tags to restore:",
+            reply_markup=InlineKeyboardMarkup(_build_restore_buttons(chat_id))
+        )
+
+    elif action == "tag_restore_exec":
+        # Execute restoration of selected hidden tags
+        to_restore = _pending_tag_restores.pop(chat_id, set())
+        for tag in to_restore:
+            tag_blacklist.discard(tag.lower())
+            if tag.lower() not in tag_index:
+                tag_index[tag.lower()] = 1
+        if to_restore:
+            save_tag_index()
+            save_tag_blacklist()
+        _render_tags(message, page=0, chat_id=chat_id)
 
     # ── soundiiz_help ─────────────────────────────────────────────────────────
     elif action == "soundiiz_help":
