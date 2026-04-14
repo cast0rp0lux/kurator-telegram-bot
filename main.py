@@ -2332,18 +2332,18 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
     # Export buttons sent separately (no text, just buttons)
     try:
         message.reply_text(
-            "\u2800",  # Braille Pattern Blank — invisible but valid for Telegram
+            "\u00a0",  # Non-Breaking Space — invisible but accepted by Telegram
             reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
         )
         log.info(f"[Export] OK (key={key[:20]})")
     except Exception as _export_err:
-        log.error(f"[Export] Error con \\u2800: {_export_err}")
+        log.error(f"[Export] Error con \\u00a0: {_export_err}")
         try:
             message.reply_text(
-                "📡",
+                "·",
                 reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
             )
-            log.info("[Export] Fallback 📡 OK")
+            log.info("[Export] Fallback · OK")
         except Exception as _export_err2:
             log.error(f"[Export] Fallback también falló: {_export_err2}")
 
@@ -2464,21 +2464,25 @@ def changelog_command(update, context):
 
     update.message.reply_text(changelog_text, parse_mode="HTML")
 
+def _genre_era_prompt(responder, chat_id, style, back_cb):
+    """Show era-selection screen for a genre. responder is a callable(text, reply_markup=...)."""
+    _pending_decades.pop(chat_id, None)
+    _pending_gen[chat_id] = {"action": f"build|{style}", "back": back_cb}
+    responder(
+        f"🎸 {style.title()}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🍌 All Time",        callback_data="decade_confirm")],
+            [InlineKeyboardButton("📅 Select a decade", callback_data="decade_open")],
+            [InlineKeyboardButton("← Back",             callback_data=back_cb)],
+        ])
+    )
+
 def genre_command(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     if context.args:
         tag = " ".join(context.args)
-        _pending_gen[chat_id] = {"action": f"build|{tag}", "back": "cmd|explore_menu"}
-        _pending_decades.pop(chat_id, None)
-        msg.reply_text(
-            f"🎸 {tag.title()}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍌 All Time",        callback_data="decade_confirm")],
-                [InlineKeyboardButton("📅 Select a decade", callback_data="decade_open")],
-                [InlineKeyboardButton("← Back",             callback_data="cmd|explore_menu")],
-            ])
-        )
+        _genre_era_prompt(msg.reply_text, chat_id, tag, "cmd|explore_menu")
     else:
         msg.reply_text(
             "🎸 Genre playlist\n\nSend: /genre <genre>\n\nExample: /genre southern rock",
@@ -2492,8 +2496,7 @@ def playlist(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     if context.args:
-        # Redirect legacy /playlist <genre> to genre_command flow
-        genre_command(update, context)
+        msg.reply_text(f"Para playlists por género usa /genre {' '.join(context.args)}")
         return
     _pending_gen[chat_id] = {"action": "playlist", "back": "cmd|picks_menu"}
     msg.reply_text(
@@ -3432,15 +3435,8 @@ def handle_buttons(update, context):
     elif action == "map_style":
         mem          = map_memory.get(chat_id, {})
         display_name = mem.get("display_name", "")
-        back_label   = f"← Back to styles" if display_name else "← Back"
-        query.edit_message_text(
-            f"🏷️ {value.title()}\n\nGenerate a playlist for this style?",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data=f"build|{value}")],
-                [InlineKeyboardButton(back_label,             callback_data=f"map_styles|{chat_id}|0")],
-                [InlineKeyboardButton("🦍 Main menu",          callback_data="cmd|menu")],
-            ])
-        )
+        back_cb      = f"map_styles|{chat_id}|0" if display_name else "cmd|explore_menu"
+        _genre_era_prompt(query.edit_message_text, chat_id, value, back_cb)
 
     # ── map_back ──────────────────────────────────────────────────────────────
     # ── card_back: return to current card without touching nav history ─────────
@@ -3723,20 +3719,6 @@ def handle_buttons(update, context):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    # ── build: playlist from style ────────────────────────────────────────────
-    elif action == "build":
-        style = value
-        _pending_decades.pop(chat_id, None)
-        _pending_gen[chat_id] = {"action": f"build|{style}", "back": f"map_back|{chat_id}"}
-        query.edit_message_text(
-            f"🎸 {style.title()}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍌 All Time",        callback_data="decade_confirm")],
-                [InlineKeyboardButton("📅 Select a decade", callback_data="decade_open")],
-                [InlineKeyboardButton("← Back",             callback_data=f"map_back|{chat_id}")],
-            ])
-        )
-
 # ─── YouTube Music OAuth ──────────────────────────────────────────────────────
 
 def _yt_auth_url(chat_id):
@@ -3929,16 +3911,7 @@ def handle_text_reply(update, context):
     elif action == "awaiting_genre":
         _pending_gen.pop(chat_id, None)
         tag = text.lower().strip()
-        _pending_gen[chat_id] = {"action": f"build|{tag}", "back": "cmd|explore_menu"}
-        _pending_decades.pop(chat_id, None)
-        msg.reply_text(
-            f"🎸 {tag.title()}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍌 All Time",        callback_data="decade_confirm")],
-                [InlineKeyboardButton("📅 Select a decade", callback_data="decade_open")],
-                [InlineKeyboardButton("← Back",             callback_data="cmd|explore_menu")],
-            ])
-        )
+        _genre_era_prompt(msg.reply_text, chat_id, tag, "cmd|explore_menu")
 
 # ─── Boot ─────────────────────────────────────────────────────────────────────
 
