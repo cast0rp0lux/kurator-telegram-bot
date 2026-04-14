@@ -2670,6 +2670,15 @@ def _is_valid_tag(tag):
         return False
     return True
 
+def _tags_nav_row(page, total_pages, prev_cb, next_cb):
+    """Always returns a 2-button [Prev, Next] row.
+    Missing side shows 'page / total' as a noop label so alignment stays fixed."""
+    label = InlineKeyboardButton(f"{page+1} / {total_pages}", callback_data="noop")
+    left  = InlineKeyboardButton("← Prev", callback_data=prev_cb) if page > 0          else label
+    right = InlineKeyboardButton("Next →",  callback_data=next_cb) if page < total_pages - 1 else label
+    return [left, right]
+
+
 def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
     start     = page * TAGS_PAGE_SIZE
     end       = start + TAGS_PAGE_SIZE
@@ -2691,13 +2700,9 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
                 row = []
         if row:
             buttons.append(row)
-        nav = []
-        if page > 0:
-            nav.append(InlineKeyboardButton("← Prev", callback_data=f"tags_edit|{page-1}"))
-        if end < len(sorted_tags):
-            nav.append(InlineKeyboardButton("Next →", callback_data=f"tags_edit|{page+1}"))
-        if nav:
-            buttons.append(nav)
+        buttons.append(_tags_nav_row(page, total_pages,
+                                     prev_cb=f"tags_edit|{page-1}",
+                                     next_cb=f"tags_edit|{page+1}"))
         if sel:
             buttons.append([InlineKeyboardButton(
                 f"🗑️ Delete {len(sel)} selected",
@@ -2718,13 +2723,9 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
                 row = []
         if row:
             buttons.append(row)
-        nav = []
-        if page > 0:
-            nav.append(InlineKeyboardButton("← Prev", callback_data=f"tags_page|{page-1}"))
-        if end < len(sorted_tags):
-            nav.append(InlineKeyboardButton("Next →", callback_data=f"tags_page|{page+1}"))
-        if nav:
-            buttons.append(nav)
+        buttons.append(_tags_nav_row(page, total_pages,
+                                     prev_cb=f"tags_page|{page-1}",
+                                     next_cb=f"tags_page|{page+1}"))
         buttons.append([
             InlineKeyboardButton("✏️ Edit", callback_data=f"tags_edit|{page}"),
             InlineKeyboardButton("← Back",  callback_data="cmd|explore_menu"),
@@ -2753,13 +2754,9 @@ def _build_restore_buttons(chat_id, page=0):
             row = []
     if row:
         buttons.append(row)
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("← Prev", callback_data=f"tags_restore_page|{page-1}"))
-    if end < len(all_tags):
-        nav.append(InlineKeyboardButton("Next →", callback_data=f"tags_restore_page|{page+1}"))
-    if nav:
-        buttons.append(nav)
+    buttons.append(_tags_nav_row(page, total_pages,
+                                 prev_cb=f"tags_restore_page|{page-1}",
+                                 next_cb=f"tags_restore_page|{page+1}"))
     if sel:
         buttons.append([InlineKeyboardButton(
             f"🔄 Restore {len(sel)} selected",
