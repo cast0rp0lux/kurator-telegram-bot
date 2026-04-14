@@ -3031,40 +3031,6 @@ def handle_buttons(update, context):
             _cancel_working(sent, timer)
             send_playlist(message, result, title=f"✦ Kurator's Rare{era_tag}", branded=True, chat_id=chat_id, size=RARE_PLAYLIST_SIZE)
 
-        elif gen_action.startswith("trail|"):
-            sub    = gen_action.split("|", 2)
-            hops   = int(sub[1]) if len(sub) > 1 else 1
-            artist = sub[2] if len(sub) > 2 else ""
-            hop_labels = {1: "1 hop", 2: "2 hops"}
-            query.edit_message_text(f"🔗 {artist} — Following the trail ({hop_labels.get(hops, '')})…")
-            sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
-            if hops == 1:
-                stored = map_memory.get(chat_id, {}).get("similar")
-                names  = stored if stored else _expand_trail(artist, 1)
-                # Auto-expand to 2 hops if > 60% of 1-hop artists already used
-                history_tracks = history.get("tracks") or {}
-                exhausted = sum(1 for n in names if any(k.startswith(normalize(n)+"-") for k in history_tracks))
-                if names and exhausted / len(names) > 0.6:
-                    log.info(f"Trail auto-expanding to 2 hops ({exhausted}/{len(names)} exhausted)")
-                    names = _expand_trail(artist, 2)
-            else:
-                names = _expand_trail(artist, hops)
-            
-            # Apply underground scoring filter
-            if message:
-                _safe_reply(message, "🔍 Filtering for quality…")
-            original_count = len(names)
-            names = _filter_underground_artists(names, artist)
-            if len(names) < 10:
-                log.info(f"[Trail] Underground filter too strict ({len(names)}/{original_count}) — using all artists")
-                names = _expand_trail(artist, hops)  # fallback to unfiltered
-            
-            result = select_tracks(names, skip_recent=False)
-            _cancel_working(sent, timer)
-            send_playlist(message, result,
-                          title=f"🔗 {artist} — {hop_labels.get(hops, '')}",
-                          branded=False, chat_id=chat_id, map_chat_id=chat_id)
-
         elif gen_action.startswith("build|"):
             style = gen_action.split("|", 1)[1]
 
@@ -3172,12 +3138,17 @@ def handle_buttons(update, context):
         pending = _pending_gen.get(chat_id, {})
         back_cb = pending.get("back", "cmd|menu")
         _pending_decades.pop(chat_id, None)
-        # Re-show era choice from pending
         gen_action = pending.get("action", "")
-        parts = gen_action.split("|", 1)
-        title_map = {"playlist": "🎵 Kurator's Playlist", "dig": "⛏️ Kurator's Dig", "rare": "💎 Kurator's Rare"}
-        title = title_map.get(parts[0], "Generate playlist")
-        _show_era_choice(query, chat_id, title, gen_action, back_cb)
+        if gen_action.startswith("build|"):
+            # Genre flow — restore ∞ All Time / 📅 decade screen
+            style = gen_action.split("|", 1)[1]
+            _genre_era_prompt(query.edit_message_text, chat_id, style, back_cb)
+        else:
+            # Picks flow — restore 🍌 GENERATE PLAYLIST screen
+            parts = gen_action.split("|", 1)
+            title_map = {"playlist": "🎵 Kurator's Playlist", "dig": "⛏️ Kurator's Dig", "rare": "💎 Kurator's Rare"}
+            title = title_map.get(parts[0], "Generate playlist")
+            _show_era_choice(query, chat_id, title, gen_action, back_cb)
 
     # ── decade_alltime: All Time confirmation screen ──────────────────────────
     elif action == "decade_alltime":
