@@ -2330,14 +2330,15 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
     )
 
     # Export buttons sent separately (no text, just buttons)
+    _EXPORT_GHOST = "\u200b"  # Zero Width Space — invisible in Telegram
     try:
         message.reply_text(
-            "\u00a0",  # Non-Breaking Space — invisible but accepted by Telegram
+            _EXPORT_GHOST,
             reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
         )
         log.info(f"[Export] OK (key={key[:20]})")
     except Exception as _export_err:
-        log.error(f"[Export] Error con \\u00a0: {_export_err}")
+        log.error(f"[Export] Error con \\u200b: {_export_err}")
         try:
             message.reply_text(
                 "·",
@@ -3703,7 +3704,7 @@ def handle_buttons(update, context):
     elif action == "export_expand":
         key = value
         query.edit_message_text(
-            "📡 Export options:",
+            "\u200b",
             reply_markup=InlineKeyboardMarkup(_export_buttons(key))
         )
 
@@ -3711,13 +3712,13 @@ def handle_buttons(update, context):
     elif action == "export_collapse":
         key = value
         query.edit_message_text(
-            "📡 Export:",
+            "\u200b",
             reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key))
         )
 
     # ── export_back ───────────────────────────────────────────────────────────
     elif action == "export_back":
-        query.edit_message_text("📡 Export options:",
+        query.edit_message_text("\u200b",
             reply_markup=InlineKeyboardMarkup(_export_buttons(value)))
 
     # ── sp_expand ─────────────────────────────────────────────────────────────
