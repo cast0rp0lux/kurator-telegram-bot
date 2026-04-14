@@ -2464,14 +2464,14 @@ def changelog_command(update, context):
 
     update.message.reply_text(changelog_text, parse_mode="HTML")
 
-def playlist(update, context):
+def genre_command(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     if context.args:
         tag = " ".join(context.args)
         _pending_gen[chat_id] = {"action": f"build|{tag}", "back": "cmd|explore_menu"}
         _pending_decades.pop(chat_id, None)
-        relevant = _get_relevant_decades(tag)
+        _get_relevant_decades(tag)  # warm up relevant decades for this genre
         msg.reply_text(
             f"🎸 {tag.title()}\n\nSelect a decade:",
             reply_markup=InlineKeyboardMarkup([
@@ -2480,15 +2480,30 @@ def playlist(update, context):
             ])
         )
     else:
-        _pending_gen[chat_id] = {"action": "playlist", "back": "cmd|picks_menu"}
         msg.reply_text(
-            "🎵 Kurator's Playlist",
+            "🎸 Genre playlist\n\nSend: /genre <genre>\n\nExample: /genre southern rock",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="decade_confirm")],
-                [InlineKeyboardButton("📅 Select a decade",   callback_data="decade_open")],
-                [InlineKeyboardButton("← Back",               callback_data="cmd|picks_menu")],
+                [InlineKeyboardButton("🏷️ Browse genres", callback_data="cmd|tags")],
+                [InlineKeyboardButton("← Back",           callback_data="cmd|explore_menu")],
             ])
         )
+
+def playlist(update, context):
+    msg     = update.message
+    chat_id = update.effective_chat.id
+    if context.args:
+        # Redirect legacy /playlist <genre> to genre_command flow
+        genre_command(update, context)
+        return
+    _pending_gen[chat_id] = {"action": "playlist", "back": "cmd|picks_menu"}
+    msg.reply_text(
+        "🎵 Kurator's Playlist",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="decade_confirm")],
+            [InlineKeyboardButton("📅 Select a decade",   callback_data="decade_open")],
+            [InlineKeyboardButton("← Back",               callback_data="cmd|picks_menu")],
+        ])
+    )
 
 def dig(update, context):
     chat_id = update.effective_chat.id
@@ -3949,6 +3964,7 @@ log.info("Flask OAuth server started on port 8080")
 dp.add_handler(CommandHandler("start",     start))
 dp.add_handler(CommandHandler("help",      help_command))
 dp.add_handler(CommandHandler("changelog", changelog_command))
+dp.add_handler(CommandHandler("genre",     genre_command))
 dp.add_handler(CommandHandler("playlist",  playlist))
 dp.add_handler(CommandHandler("dig",      dig))
 dp.add_handler(CommandHandler("rare",     rare))
@@ -3969,6 +3985,7 @@ try:
         BotCommand("playlist", "🎵 Kurator's Playlist"),
         BotCommand("dig",      "⛏️ Dig deeper"),
         BotCommand("rare",     "💎 Rare finds"),
+        BotCommand("genre",    "🎸 Genre playlist"),
         BotCommand("explore",  "🔍 Explore an artist"),
         BotCommand("tags",     "🏷️ Browse tags"),
         BotCommand("status",   "📊 My stats"),
