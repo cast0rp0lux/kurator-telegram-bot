@@ -1779,9 +1779,9 @@ def _decade_label(chat_id):
 _track_store   = {}  # key → {"tracks": [...], "title": "..."}
 _track_counter = itertools.count()
 
-def _store_tracks(tracks, title="Kurator Playlist", map_chat_id=None):
+def _store_tracks(tracks, title="Kurator Playlist", map_chat_id=None, text=None):
     key = str(next(_track_counter))
-    _track_store[key] = {"tracks": tracks, "title": title, "map_chat_id": map_chat_id}
+    _track_store[key] = {"tracks": tracks, "title": title, "map_chat_id": map_chat_id, "text": text}
     if len(_track_store) > TRACK_STORE_MAX:
         for old in sorted(_track_store.keys(), key=int)[:len(_track_store) - TRACK_STORE_MAX]:
             del _track_store[old]
@@ -2318,14 +2318,17 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
             short_warning = f"\nDeep cut selection — {len(tracks)} tracks found.\n"
         elif len(tracks) < 25:
             short_warning = f"\nTight scene — {len(tracks)} essential tracks.\n"
-    key        = _store_tracks(tracks, title=title, map_chat_id=map_chat_id)
-    track_list = "\n".join(tracks)
+    track_list   = "\n".join(tracks)
+    playlist_text = (
+        f"{title} — {len(tracks)} tracks\n"
+        f"{BOT_VERSION}{short_warning}\n\n"
+        f"{track_list}"
+    )
+    key = _store_tracks(tracks, title=title, map_chat_id=map_chat_id, text=playlist_text)
 
     # Single message: playlist text + Export button at the bottom
     message.reply_text(
-        f"{title} — {len(tracks)} tracks\n"
-        f"{BOT_VERSION}{short_warning}\n\n"
-        f"{track_list}",
+        playlist_text,
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
     )
@@ -3664,14 +3667,32 @@ def handle_buttons(update, context):
     elif action == "export_collapse":
         stored = _track_store.get(value, {})
         mcid   = stored.get("map_chat_id") if isinstance(stored, dict) else None
-        query.edit_message_reply_markup(
-            reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(value, map_chat_id=mcid))
-        )
+        text   = stored.get("text") if isinstance(stored, dict) else None
+        if text:
+            query.edit_message_text(
+                text,
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(value, map_chat_id=mcid))
+            )
+        else:
+            query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(value, map_chat_id=mcid))
+            )
 
     # ── export_back ───────────────────────────────────────────────────────────
     elif action == "export_back":
-        query.edit_message_reply_markup(
-            reply_markup=InlineKeyboardMarkup(_export_buttons(value)))
+        stored = _track_store.get(value, {})
+        text   = stored.get("text") if isinstance(stored, dict) else None
+        if text:
+            query.edit_message_text(
+                text,
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup(_export_buttons(value))
+            )
+        else:
+            query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup(_export_buttons(value))
+            )
 
     # ── sp_expand ─────────────────────────────────────────────────────────────
     elif action == "sp_expand":
