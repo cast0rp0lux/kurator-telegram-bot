@@ -2488,11 +2488,11 @@ def genre_command(update, context):
         tag = " ".join(context.args)
         _genre_era_prompt(msg.reply_text, chat_id, tag, "cmd|explore_menu")
     else:
+        _pending_gen[chat_id] = {"action": "awaiting_genre", "back": "cmd|explore_menu"}
         msg.reply_text(
-            "🎸 Genre playlist\n\nSend: /genre <genre>\n\nExample: /genre southern rock",
+            "🎸 Play a genre\n\nType a genre name:\n\ne.g. Rock, Jazz, Electronic, Post-Punk",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏷️ Browse genres", callback_data="cmd|tags")],
-                [InlineKeyboardButton("← Back",           callback_data="cmd|explore_menu")],
+                [InlineKeyboardButton("← Back", callback_data="cmd|explore_menu")],
             ])
         )
 
@@ -2540,7 +2540,13 @@ def map_command(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     if not context.args:
-        msg.reply_text("🧑‍🎤 Artist\n\nSend: /artist <artist>")
+        _pending_gen[chat_id] = {"action": "awaiting_map", "back": "cmd|explore_menu"}
+        msg.reply_text(
+            "🧑‍🎤 Artist\n\nType an artist name:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("← Back", callback_data="cmd|explore_menu")],
+            ])
+        )
         return
     artist_query = " ".join(context.args)
 
