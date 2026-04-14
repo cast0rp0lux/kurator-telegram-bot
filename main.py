@@ -2440,13 +2440,7 @@ def help_command(update, context):
     update.message.reply_text(_help_text(), parse_mode="HTML")
 
 def changelog_command(update, context):
-    """Show development changelog (admin only)."""
-    chat_id = update.effective_chat.id
-    
-    # Only allow admin to see changelog
-    if chat_id != ADMIN_CHAT_ID:
-        return
-    
+    """Show development changelog."""
     import html as _html
     # Build changelog text
     changelog_text = "📀 <b>Kurator Development Log</b>\n\n"
@@ -2934,11 +2928,12 @@ def handle_buttons(update, context):
 
         elif value == "genre_prompt":
             _pending_gen[chat_id] = {"action": "awaiting_genre", "back": "cmd|explore_menu"}
-            fr_msg = query.message.reply_text(
-                "🎸 Play a genre\n\nReply with a genre name:\n\ne.g. Rock, Jazz, Electronic, Post-Punk",
-                reply_markup=ForceReply(selective=True)
+            query.edit_message_text(
+                "🎸 Play a genre\n\nType a genre name:\n\ne.g. Rock, Jazz, Electronic, Post-Punk",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("← Back", callback_data="cmd|explore_menu")],
+                ])
             )
-            _pending_gen[chat_id]["forcereply_id"] = fr_msg.message_id
 
         elif value == "tags":
             _render_tags(message, page=0)
