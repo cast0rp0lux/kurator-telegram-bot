@@ -205,7 +205,7 @@ TRACK_FETCH_LIMIT   = 50
 TRACK_SKIP_TOP      = 5
 TRACK_PLAYCOUNT_MAX = 500_000
 HISTORY_EXPIRY_DAYS = 90
-TRACK_LINKS_PAGE    = 10
+TRACK_LINKS_PAGE    = 5
 MB_USER_AGENT       = "Kurator/4.8.10 (telegram bot)"
 DECADES             = ["50s", "60s", "70s", "80s", "90s", "00s", "10s", "20s"]
 DECADE_YEARS        = {
@@ -3710,7 +3710,7 @@ def handle_buttons(update, context):
         buttons = []
         for t in page_tracks:
             parts = t.split(" - ", 1)
-            label = f"{parts[0][:28]} – {parts[1][:18]}" if len(parts) == 2 else t[:48]
+            label = f"{parts[0][:18]} – {parts[1][:32]}" if len(parts) == 2 else t[:52]
             buttons.append([InlineKeyboardButton(f"‣ {label}", url=spotify_url(t))])
         nav = []
         if page > 0:
