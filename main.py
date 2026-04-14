@@ -14,7 +14,7 @@ from urllib.parse import quote, urlencode
 
 import requests
 from flask import Flask, request as flask_request
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, ReplyKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, Filters, Updater
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -2882,15 +2882,7 @@ def handle_buttons(update, context):
             )
 
         elif value == "explore_menu":
-            # Delete pending ForceReply message if exists
-            pending = _pending_gen.get(chat_id, {})
-            fr_id = pending.get("forcereply_id")
-            if fr_id:
-                try:
-                    query.bot.delete_message(chat_id=chat_id, message_id=fr_id)
-                except Exception:
-                    pass
-                _pending_gen.pop(chat_id, None)
+            _pending_gen.pop(chat_id, None)
             query.edit_message_text(
                 "<b>🧭 Free Explore</b>\n\n"
                 "Navigate the music world freely.\n"
@@ -2920,11 +2912,12 @@ def handle_buttons(update, context):
         elif value == "map_prompt":
             _nav_history.pop(chat_id, None)
             _pending_gen[chat_id] = {"action": "awaiting_map", "back": "cmd|explore_menu"}
-            fr_msg = query.message.reply_text(
-                "🧑‍🎤 Artist\n\nReply with the artist name:",
-                reply_markup=ForceReply(selective=True)
+            query.edit_message_text(
+                "🧑‍🎤 Artist\n\nType an artist name:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("← Back", callback_data="cmd|explore_menu")],
+                ])
             )
-            _pending_gen[chat_id]["forcereply_id"] = fr_msg.message_id
 
         elif value == "genre_prompt":
             _pending_gen[chat_id] = {"action": "awaiting_genre", "back": "cmd|explore_menu"}
@@ -3917,10 +3910,10 @@ def health():
 def _start_flask():
     flask_app.run(host="0.0.0.0", port=8080, use_reloader=False)
 
-# ─── Text reply handler (ForceReply for map and genre) ────────────────────────
+# ─── Text reply handler ───────────────────────────────────────────────────────
 
 def handle_text_reply(update, context):
-    """Handle ForceReply responses for map and genre searches."""
+    """Handle text input for map and genre searches."""
     msg     = update.message
     chat_id = update.effective_chat.id
     text    = msg.text.strip() if msg.text else ""
