@@ -1779,9 +1779,9 @@ def _decade_label(chat_id):
 _track_store   = {}  # key → {"tracks": [...], "title": "..."}
 _track_counter = itertools.count()
 
-def _store_tracks(tracks, title="Kurator Playlist"):
+def _store_tracks(tracks, title="Kurator Playlist", map_chat_id=None):
     key = str(next(_track_counter))
-    _track_store[key] = {"tracks": tracks, "title": title}
+    _track_store[key] = {"tracks": tracks, "title": title, "map_chat_id": map_chat_id}
     if len(_track_store) > TRACK_STORE_MAX:
         for old in sorted(_track_store.keys(), key=int)[:len(_track_store) - TRACK_STORE_MAX]:
             del _track_store[old]
@@ -2275,7 +2275,7 @@ def _format_artist_card(artist_query, info):
 
 def _export_collapsed_buttons(key, map_chat_id=None):
     """Single Export button — expands when tapped."""
-    buttons = [[InlineKeyboardButton("📡 Export", callback_data=f"export_expand|{key}")]]
+    buttons = [[InlineKeyboardButton("Export ▼", callback_data=f"export_expand|{key}")]]
     if map_chat_id:
         mem          = map_memory.get(map_chat_id, {})
         display_name = mem.get("display_name", "")
@@ -2318,26 +2318,18 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
             short_warning = f"\nDeep cut selection — {len(tracks)} tracks found.\n"
         elif len(tracks) < 25:
             short_warning = f"\nTight scene — {len(tracks)} essential tracks.\n"
-    key        = _store_tracks(tracks, title=title)
+    key        = _store_tracks(tracks, title=title, map_chat_id=map_chat_id)
     track_list = "\n".join(tracks)
 
-    # Message 1 — playlist, no buttons so it never gets edited or lost
+    # Single message: playlist text + Export button at the bottom
     message.reply_text(
         f"{title} — {len(tracks)} tracks\n"
         f"{BOT_VERSION}{short_warning}\n\n"
         f"{track_list}",
         disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
     )
-
-    # Export buttons sent separately — Telegram requires non-empty text, use minimal dot
-    try:
-        message.reply_text(
-            "·",
-            reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=map_chat_id))
-        )
-        log.info(f"[Export] OK (key={key[:20]})")
-    except Exception as _export_err:
-        log.error(f"[Export] Error: {_export_err}")
+    log.info(f"[Export] OK (key={key[:20]})")
 
 # ─── Persistent bottom keyboard ───────────────────────────────────────────────
 
@@ -3699,8 +3691,10 @@ def handle_buttons(update, context):
 
     # ── export_collapse: back to single Export button ─────────────────────────
     elif action == "export_collapse":
+        stored = _track_store.get(value, {})
+        mcid   = stored.get("map_chat_id") if isinstance(stored, dict) else None
         query.edit_message_reply_markup(
-            reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(value))
+            reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(value, map_chat_id=mcid))
         )
 
     # ── export_back ───────────────────────────────────────────────────────────
