@@ -232,6 +232,7 @@ RECENT_ARTISTS_MAX = 60
 # ─── Cancel flags ─────────────────────────────────────────────────────────────
 _cancel_flags   = {}  # chat_id → bool
 _active_timers  = {}  # chat_id → (sent_dict, timer) — working message activo
+_progress_msgs  = {}  # chat_id → [Message] — intermediate messages to delete after playlist
 
 def _is_cancelled(chat_id):
     return _cancel_flags.get(chat_id, False)
@@ -1590,8 +1591,11 @@ def _filter_artists_by_decade(artists, decades, message=None):
     return passed if passed else []
 
 def _safe_reply(message, text):
-    try: message.reply_text(text)
-    except Exception: pass
+    try:
+        m = message.reply_text(text)
+        _progress_msgs.setdefault(message.chat_id, []).append(m)
+    except Exception:
+        pass
 
 def select_tracks_with_decades(artists, size=None, decades=None, message=None, mode="playlist", style_filter=None, use_mb=False, genre=None):
     """
@@ -1877,7 +1881,8 @@ def _working_message(message, text, delay=8):
     def _send():
         if not sent["done"]:
             try:
-                message.reply_text(text)
+                m = message.reply_text(text)
+                _progress_msgs.setdefault(message.chat_id, []).append(m)
             except Exception:
                 pass
 
@@ -1888,6 +1893,14 @@ def _working_message(message, text, delay=8):
 def _cancel_working(sent, timer):
     sent["done"] = True
     timer.cancel()
+
+def _clear_progress_msgs(chat_id):
+    """Delete all intermediate progress messages accumulated during generation."""
+    for m in _progress_msgs.pop(chat_id, []):
+        try:
+            m.delete()
+        except Exception:
+            pass
 
 COUNTRY_FLAGS = {
     "GB": "🇬🇧", "US": "🇺🇸", "DE": "🇩🇪", "FR": "🇫🇷",
@@ -3011,6 +3024,10 @@ def handle_buttons(update, context):
                 result = select_tracks(expand_artist_graph(extract_seed_artists()))
             _cancel_working(sent, timer)
             send_playlist(message, result, title=f"✦ Kurator's Playlist{era_tag}", branded=True, chat_id=chat_id)
+            _clear_progress_msgs(chat_id)
+            era_label = _decade_label_from_set(decades) if decades else "∞ All Time"
+            try: query.edit_message_text(f"✦ Kurator's Playlist — {era_label}")
+            except Exception: pass
 
         elif gen_action == "dig":
             query.edit_message_text(f"⛏️ Digging{era_tag}…")
@@ -3022,6 +3039,10 @@ def handle_buttons(update, context):
                 result = select_tracks(expand_artist_graph_deep(extract_seed_artists()))
             _cancel_working(sent, timer)
             send_playlist(message, result, title=f"✦ Kurator's Dig{era_tag}", branded=True, chat_id=chat_id)
+            _clear_progress_msgs(chat_id)
+            era_label = _decade_label_from_set(decades) if decades else "∞ All Time"
+            try: query.edit_message_text(f"⛏️ Kurator's Dig — {era_label}")
+            except Exception: pass
 
         elif gen_action == "rare":
             query.edit_message_text(f"💎 Searching for hidden gems{era_tag}…")
@@ -3033,6 +3054,10 @@ def handle_buttons(update, context):
                 result = select_tracks(expand_artist_graph_rare(extract_seed_artists()), size=RARE_PLAYLIST_SIZE)
             _cancel_working(sent, timer)
             send_playlist(message, result, title=f"✦ Kurator's Rare{era_tag}", branded=True, chat_id=chat_id, size=RARE_PLAYLIST_SIZE)
+            _clear_progress_msgs(chat_id)
+            era_label = _decade_label_from_set(decades) if decades else "∞ All Time"
+            try: query.edit_message_text(f"💎 Kurator's Rare — {era_label}")
+            except Exception: pass
 
         elif gen_action.startswith("build|"):
             style = gen_action.split("|", 1)[1]
@@ -3135,6 +3160,9 @@ def handle_buttons(update, context):
             send_playlist(message, tracks, title=f"🎸 {style.title()}{era_tag2}",
                           branded=False, chat_id=chat_id, size=GENRE_PLAYLIST_SIZE,
                           map_chat_id=chat_id if from_map else None)
+            _clear_progress_msgs(chat_id)
+            try: query.edit_message_text(f"🎸 {style.title()}{era_tag2}")
+            except Exception: pass
 
     # ── decade_back: restore era choice screen ────────────────────────────────
     elif action == "decade_back":
