@@ -2440,33 +2440,38 @@ def help_command(update, context):
     update.message.reply_text(_help_text(), parse_mode="HTML")
 
 def changelog_command(update, context):
-    """Show development changelog."""
+    """Show development changelog, newest versions first, split if needed."""
     import html as _html
-    # Build changelog text
-    changelog_text = "📀 <b>Kurator Development Log</b>\n\n"
 
-    # Sort versions in reverse order (newest first)
     sorted_versions = sorted(CHANGELOG.keys(), key=lambda x: float(x), reverse=True)
 
+    chunks   = []
+    current  = "📀 <b>Kurator Development Log</b>\n\n"
+
     for version in sorted_versions:
-        entry = CHANGELOG[version]
-        changelog_text += f"━━━ <b>v{version}</b> ({entry['date']}) ━━━\n"
-
-        # Changes
+        entry  = CHANGELOG[version]
+        block  = f"━━━ <b>v{version}</b> ({entry['date']}) ━━━\n"
         if entry.get('changes'):
-            changelog_text += "✨ <b>Cambios:</b>\n"
+            block += "✨ <b>Cambios:</b>\n"
             for change in entry['changes']:
-                changelog_text += f"  • {_html.escape(change)}\n"
-
-        # Technical details
+                block += f"  • {_html.escape(change)}\n"
         if entry.get('technical'):
-            changelog_text += "\n⚙️ <b>Técnico:</b>\n"
+            block += "\n⚙️ <b>Técnico:</b>\n"
             for tech in entry['technical']:
-                changelog_text += f"  • {_html.escape(tech)}\n"
+                block += f"  • {_html.escape(tech)}\n"
+        block += "\n"
 
-        changelog_text += "\n"
+        if len(current) + len(block) > 3800:
+            chunks.append(current)
+            current = block
+        else:
+            current += block
 
-    update.message.reply_text(changelog_text, parse_mode="HTML")
+    if current:
+        chunks.append(current)
+
+    for chunk in chunks:
+        update.message.reply_text(chunk, parse_mode="HTML")
 
 def _genre_era_prompt(responder, chat_id, style, back_cb):
     """Show era-selection screen for a genre. responder is a callable(text, reply_markup=...)."""
