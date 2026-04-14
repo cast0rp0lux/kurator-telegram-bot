@@ -1605,6 +1605,8 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
     if not decades:
         return select_tracks(artists, size=size)
 
+    chat_id = message.chat_id if message else None
+
     # Resolve style_override from genre — always, even if not in map
     style_override = None
     if genre:
@@ -1616,6 +1618,7 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
 
     if mode == "dig":
         seeds = _get_era_artists_from_discogs(decades, mode="dig", max_artists=80, style_override=style_override)
+        if chat_id and _is_cancelled(chat_id): return []
         if message:
             _safe_reply(message, "🔗 Expanding connections…")
         pool = _expand_era_pool_dig(seeds)
@@ -1627,6 +1630,7 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
             pool = pool[:200]
     elif mode == "rare":
         pool = _get_era_artists_from_discogs(decades, mode="rare", max_artists=120, style_override=style_override)
+        if chat_id and _is_cancelled(chat_id): return []
         if message:
             _safe_reply(message, "💎 Filtering for obscure artists…")
         rare_pool = []
@@ -1643,6 +1647,8 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
         log.info(f"Rare era: {len(pool)} after listeners filter")
     else:
         pool = _get_era_artists_from_discogs(decades, mode="playlist", max_artists=100, style_override=style_override)
+
+    if chat_id and _is_cancelled(chat_id): return []
 
     # Expand pool using genre graph if too small
     if genre and len(pool) < 50:
@@ -1684,6 +1690,8 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
     if not pool:
         log.info("Era pool empty — falling back to user history pool")
         return select_tracks(artists, size=size)
+
+    if chat_id and _is_cancelled(chat_id): return []
 
     # Verify artist names against Last.fm for track lookup compatibility
     if message:
@@ -1740,6 +1748,8 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
     for i in range(0, min(len(filtered_pool), target * 4), BATCH_SIZE):
         if len(tracks) >= target:
             break
+        if chat_id and _is_cancelled(chat_id):
+            return []
         batch = filtered_pool[i:i + BATCH_SIZE]
         with ThreadPoolExecutor(max_workers=4) as ex:
             futures = [ex.submit(_fetch_track_from_early_albums, a, decade_year_range)
@@ -2567,12 +2577,15 @@ def reset(update, context):
     _do_reset(update.message)
 
 def cancel_command(update, context):
-    """Cancela cualquier operación en curso y limpia el estado. Oculto."""
+    """Para cualquier generación en curso."""
     chat_id = update.effective_chat.id
+    was_generating = bool(_active_timers.get(chat_id) or _progress_msgs.get(chat_id))
     _set_cancel(chat_id)
+    _clear_progress_msgs(chat_id)
     _pending_gen.pop(chat_id, None)
     _pending_decades.pop(chat_id, None)
-    update.message.reply_text("✗ Cancelled.", reply_markup=main_menu_markup())
+    msg = "⏹ Generation stopped." if was_generating else "Nothing in progress."
+    update.message.reply_text(msg, reply_markup=main_menu_markup())
 
 # ─── Map renderer ─────────────────────────────────────────────────────────────
 
@@ -3023,6 +3036,8 @@ def handle_buttons(update, context):
             else:
                 result = select_tracks(expand_artist_graph(extract_seed_artists()))
             _cancel_working(sent, timer)
+            _unregister_timer(chat_id)
+            if _is_cancelled(chat_id): _clear_progress_msgs(chat_id); return
             send_playlist(message, result, title=f"✦ Kurator's Playlist{era_tag}", branded=True, chat_id=chat_id)
             _clear_progress_msgs(chat_id)
             era_label = _decade_label_from_set(decades) if decades else "∞ All Time"
@@ -3038,6 +3053,8 @@ def handle_buttons(update, context):
             else:
                 result = select_tracks(expand_artist_graph_deep(extract_seed_artists()))
             _cancel_working(sent, timer)
+            _unregister_timer(chat_id)
+            if _is_cancelled(chat_id): _clear_progress_msgs(chat_id); return
             send_playlist(message, result, title=f"✦ Kurator's Dig{era_tag}", branded=True, chat_id=chat_id)
             _clear_progress_msgs(chat_id)
             era_label = _decade_label_from_set(decades) if decades else "∞ All Time"
@@ -3053,6 +3070,8 @@ def handle_buttons(update, context):
             else:
                 result = select_tracks(expand_artist_graph_rare(extract_seed_artists()), size=RARE_PLAYLIST_SIZE)
             _cancel_working(sent, timer)
+            _unregister_timer(chat_id)
+            if _is_cancelled(chat_id): _clear_progress_msgs(chat_id); return
             send_playlist(message, result, title=f"✦ Kurator's Rare{era_tag}", branded=True, chat_id=chat_id, size=RARE_PLAYLIST_SIZE)
             _clear_progress_msgs(chat_id)
             era_label = _decade_label_from_set(decades) if decades else "∞ All Time"
