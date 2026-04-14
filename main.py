@@ -2533,7 +2533,7 @@ def map_command(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     if not context.args:
-        msg.reply_text("🔍 Explore\n\nSend: /explore <artist>")
+        msg.reply_text("🧑‍🎤 Artist\n\nSend: /artist <artist>")
         return
     artist_query = " ".join(context.args)
 
@@ -2545,10 +2545,10 @@ def map_command(update, context):
         except Exception:
             pass
 
-    mapping_msg = msg.reply_text(f"🔍 Exploring {artist_query.upper()}…")
+    mapping_msg = msg.reply_text(f"🧑‍🎤 Exploring {artist_query.upper()}…")
     _pending_map_msgs[chat_id] = mapping_msg.message_id
 
-    sent, timer = _working_message(msg, "🔍 Still exploring…")
+    sent, timer = _working_message(msg, "🧑‍🎤 Still exploring…")
     _nav_history.pop(chat_id, None)
     _render_map(msg, artist_query, chat_id)
     _cancel_working(sent, timer)
@@ -2888,7 +2888,7 @@ def handle_buttons(update, context):
                 "▼ Where do you want to start?",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔍 Explore an artist",  callback_data="cmd|map_prompt")],
+                    [InlineKeyboardButton("🧑‍🎤 Artist",              callback_data="cmd|map_prompt")],
                     [InlineKeyboardButton("🎸 Play a genre",       callback_data="cmd|genre_prompt")],
                     [InlineKeyboardButton("🏷️ My tag collection",  callback_data="cmd|tags")],
                     [InlineKeyboardButton("← Back", callback_data="cmd|menu")],
@@ -2911,7 +2911,7 @@ def handle_buttons(update, context):
             _nav_history.pop(chat_id, None)
             _pending_gen[chat_id] = {"action": "awaiting_map", "back": "cmd|explore_menu"}
             fr_msg = query.message.reply_text(
-                "🔍 Explore an artist\n\nReply with the artist name:",
+                "🧑‍🎤 Artist\n\nReply with the artist name:",
                 reply_markup=ForceReply(selective=True)
             )
             _pending_gen[chat_id]["forcereply_id"] = fr_msg.message_id
@@ -3050,7 +3050,7 @@ def handle_buttons(update, context):
             artist = sub[2] if len(sub) > 2 else ""
             hop_labels = {1: "1 hop", 2: "2 hops"}
             query.edit_message_text(f"🔗 {artist} — Following the trail ({hop_labels.get(hops, '')})…")
-            sent, timer = _working_message(message, "🔍 Still exploring…")
+            sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
             if hops == 1:
                 stored = map_memory.get(chat_id, {}).get("similar")
                 names  = stored if stored else _expand_trail(artist, 1)
@@ -3363,7 +3363,7 @@ def handle_buttons(update, context):
         _nav_history[chat_id] = _nav_history[chat_id][-10:]
 
         # Just send new card — don't touch the current message
-        message.reply_text(f"🔍 Exploring {new_artist.upper()}…")
+        message.reply_text(f"🧑‍🎤 Exploring {new_artist.upper()}…")
         _render_map(message, new_artist, chat_id)
 
     # ── trail_go ──────────────────────────────────────────────────────────────
@@ -3387,7 +3387,7 @@ def handle_buttons(update, context):
         artist = sub[1] if len(sub) > 1 else ""
         hop_labels = {1: "1 hop", 2: "2 hops"}
         query.edit_message_text(f"🔗 {artist} — Following the trail ({hop_labels.get(hops, '')})…")
-        sent, timer = _working_message(message, "🔍 Still exploring…")
+        sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
         if hops == 1:
             stored = map_memory.get(chat_id, {}).get("similar")
             names  = stored if stored else _expand_trail(artist, 1)
@@ -3474,7 +3474,7 @@ def handle_buttons(update, context):
         if history_stack:
             prev_artist = history_stack.pop()
             _nav_history[chat_id] = history_stack
-            message.reply_text(f"🔍 Exploring {prev_artist.upper()}…")
+            message.reply_text(f"🧑‍🎤 Exploring {prev_artist.upper()}…")
             _render_map(message, prev_artist, chat_id)
             return
 
@@ -3930,9 +3930,9 @@ def handle_text_reply(update, context):
                 msg.bot.delete_message(chat_id=chat_id, message_id=prev_id)
             except Exception:
                 pass
-        mapping_msg = msg.reply_text(f"🔍 Exploring {text.upper()}…")
+        mapping_msg = msg.reply_text(f"🧑‍🎤 Exploring {text.upper()}…")
         _pending_map_msgs[chat_id] = mapping_msg.message_id
-        sent, timer = _working_message(msg, "🔍 Still exploring…")
+        sent, timer = _working_message(msg, "🧑‍🎤 Still exploring…")
         _nav_history.pop(chat_id, None)
         _render_map(msg, text, chat_id)
         _cancel_working(sent, timer)
@@ -3968,8 +3968,9 @@ dp.add_handler(CommandHandler("genre",     genre_command))
 dp.add_handler(CommandHandler("playlist",  playlist))
 dp.add_handler(CommandHandler("dig",      dig))
 dp.add_handler(CommandHandler("rare",     rare))
-dp.add_handler(CommandHandler("explore",  map_command))  # nuevo nombre principal
-dp.add_handler(CommandHandler("map",      map_command))  # alias por compatibilidad
+dp.add_handler(CommandHandler("artist",   map_command))  # nombre principal
+dp.add_handler(CommandHandler("explore",  map_command))  # alias
+dp.add_handler(CommandHandler("map",      map_command))  # alias
 dp.add_handler(CommandHandler("tags",     tags))
 dp.add_handler(CommandHandler("status",   status))
 dp.add_handler(CommandHandler("reset",    reset))
@@ -3985,8 +3986,8 @@ try:
         BotCommand("playlist", "🎵 Kurator's Playlist"),
         BotCommand("dig",      "⛏️ Dig deeper"),
         BotCommand("rare",     "💎 Rare finds"),
+        BotCommand("artist",   "🧑‍🎤 Explore an artist"),
         BotCommand("genre",    "🎸 Genre playlist"),
-        BotCommand("explore",  "🔍 Explore an artist"),
         BotCommand("tags",     "🏷️ Browse tags"),
         BotCommand("status",   "📊 My stats"),
         BotCommand("help",     "❓ Help"),
