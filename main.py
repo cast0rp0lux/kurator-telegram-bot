@@ -2737,22 +2737,34 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
     return buttons
 
 
-def _build_restore_buttons(chat_id):
-    """Multiselect view for restoring hidden tags (🟡/⚪ per tag)."""
-    sel     = _pending_tag_restores.get(chat_id, set())
+def _build_restore_buttons(chat_id, page=0):
+    """Multiselect view for restoring hidden tags (🟡/⚪ per tag), paginated."""
+    sel       = _pending_tag_restores.get(chat_id, set())
+    all_tags  = sorted(tag_blacklist)
+    start     = page * TAGS_PAGE_SIZE
+    end       = start + TAGS_PAGE_SIZE
+    page_tags = all_tags[start:end]
+    total_pages = max(1, (len(all_tags) - 1) // TAGS_PAGE_SIZE + 1)
     buttons = []
     row     = []
-    for tag in sorted(tag_blacklist):
+    for tag in page_tags:
         tick = "🟡" if tag in sel else "⚪"
         row.append(InlineKeyboardButton(
             f"{tick} {tag.title()}",
-            callback_data=safe_callback(f"tag_restore_toggle|{tag}")
+            callback_data=safe_callback(f"tag_restore_toggle|{page}|{tag}")
         ))
         if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("← Prev", callback_data=f"tags_restore_page|{page-1}"))
+    if end < len(all_tags):
+        nav.append(InlineKeyboardButton("Next →", callback_data=f"tags_restore_page|{page+1}"))
+    if nav:
+        buttons.append(nav)
     if sel:
         buttons.append([InlineKeyboardButton(
             f"🔄 Restore {len(sel)} selected",
@@ -3487,8 +3499,6 @@ def handle_buttons(update, context):
 
     elif action == "tags_edit":
         page        = int(value)
-        # Clear any pending delete selection when entering/navigating edit mode
-        _pending_tag_deletes.pop(chat_id, None)
         all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
@@ -3546,12 +3556,22 @@ def handle_buttons(update, context):
             return
         query.edit_message_text(
             "🔄 Select tags to restore:",
-            reply_markup=InlineKeyboardMarkup(_build_restore_buttons(chat_id))
+            reply_markup=InlineKeyboardMarkup(_build_restore_buttons(chat_id, page=0))
+        )
+
+    elif action == "tags_restore_page":
+        # Navigate pages within restore view (keeps selection)
+        page = int(value)
+        query.edit_message_text(
+            "🔄 Select tags to restore:",
+            reply_markup=InlineKeyboardMarkup(_build_restore_buttons(chat_id, page=page))
         )
 
     elif action == "tag_restore_toggle":
         # Toggle a hidden tag in/out of pending restore set
-        tag = value
+        parts_val = value.split("|", 1)
+        page      = int(parts_val[0]) if len(parts_val) > 1 else 0
+        tag       = parts_val[1] if len(parts_val) > 1 else value
         sel = _pending_tag_restores.setdefault(chat_id, set())
         if tag in sel:
             sel.discard(tag)
@@ -3559,7 +3579,7 @@ def handle_buttons(update, context):
             sel.add(tag)
         query.edit_message_text(
             "🔄 Select tags to restore:",
-            reply_markup=InlineKeyboardMarkup(_build_restore_buttons(chat_id))
+            reply_markup=InlineKeyboardMarkup(_build_restore_buttons(chat_id, page=page))
         )
 
     elif action == "tag_restore_exec":
