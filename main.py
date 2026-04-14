@@ -2760,7 +2760,7 @@ def _build_restore_buttons(chat_id, page=0):
     if sel:
         buttons.append([InlineKeyboardButton(
             f"🔄 Restore {len(sel)} selected",
-            callback_data="tag_restore_exec"
+            callback_data=f"tag_restore_confirm|{page}"
         )])
     buttons.append([InlineKeyboardButton("← Back", callback_data="tags_edit|0")])
     return buttons
@@ -3518,7 +3518,23 @@ def handle_buttons(update, context):
         )
 
     elif action == "tag_del_confirm":
-        # Execute deletion of all selected tags
+        # Show confirmation before deleting selected tags
+        page   = int(value) if value else 0
+        to_del = _pending_tag_deletes.get(chat_id, set())
+        if not to_del:
+            query.answer("No tags selected.")
+            return
+        names = ", ".join(sorted(t.title() for t in to_del))
+        query.edit_message_text(
+            f"🗑️ Delete {len(to_del)} tag(s)?\n\n{names}\n\nThey'll move to hidden — recoverable from Restore.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"✅ Yes, delete {len(to_del)}", callback_data=f"tag_del_exec|{page}")],
+                [InlineKeyboardButton("← Cancel", callback_data=f"tags_edit|{page}")],
+            ])
+        )
+
+    elif action == "tag_del_exec":
+        # Execute deletion after confirmation
         page   = int(value) if value else 0
         to_del = _pending_tag_deletes.pop(chat_id, set())
         for tag in to_del:
@@ -3574,8 +3590,24 @@ def handle_buttons(update, context):
             reply_markup=InlineKeyboardMarkup(_build_restore_buttons(chat_id, page=page))
         )
 
+    elif action == "tag_restore_confirm":
+        # Show confirmation before restoring selected hidden tags
+        back_page  = int(value) if value else 0
+        to_restore = _pending_tag_restores.get(chat_id, set())
+        if not to_restore:
+            query.answer("No tags selected.")
+            return
+        names = ", ".join(sorted(t.title() for t in to_restore))
+        query.edit_message_text(
+            f"🔄 Restore {len(to_restore)} tag(s)?\n\n{names}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"✅ Yes, restore {len(to_restore)}", callback_data="tag_restore_exec")],
+                [InlineKeyboardButton("← Cancel", callback_data=f"tags_restore_page|{back_page}")],
+            ])
+        )
+
     elif action == "tag_restore_exec":
-        # Execute restoration of selected hidden tags
+        # Execute restoration after confirmation
         to_restore = _pending_tag_restores.pop(chat_id, set())
         for tag in to_restore:
             tag_blacklist.discard(tag.lower())
