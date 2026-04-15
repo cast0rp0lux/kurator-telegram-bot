@@ -402,6 +402,24 @@ def save_tag_blacklist():
 def save_map_memory():
     _mongo_set("store", MAP_FILE, {str(k): v for k, v in map_memory.items()})
 
+def _migrate_tag_index_to_discogs():
+    global tag_index
+    if not tag_index:
+        return
+    if any(tag[0].isupper() for tag in tag_index.keys()):
+        log.info("tag_index already migrated to Discogs format")
+        return
+    log.info("Migrating tag_index to Discogs capitalization...")
+    migrated = {}
+    for tag, count in tag_index.items():
+        discogs_style = tag.strip().title()
+        migrated[discogs_style] = migrated.get(discogs_style, 0) + count
+    tag_index = migrated
+    save_tag_index()
+    log.info(f"Migrated {len(tag_index)} tags to Discogs format")
+
+_migrate_tag_index_to_discogs()
+
 # ─── URL helpers ──────────────────────────────────────────────────────────────
 
 def spotify_url(track):
@@ -961,18 +979,16 @@ def _resolve_genre_styles(genre, decades):
     If not mapped, uses the genre name directly as a Discogs style — works for
     most specific genres like 'Hard Techno', 'Cumbia', 'Drone Metal', etc.
     """
-    genre_map = GENRE_TO_DISCOGS_STYLES.get(genre.lower().strip(), {})
+    genre_clean = genre.strip()
+    genre_lower = genre_clean.lower()
+    genre_map = GENRE_TO_DISCOGS_STYLES.get(genre_lower, {})
     if genre_map:
         styles = []
         for d in decades:
             styles.extend(genre_map.get(d, []))
-        # Deduplicate preserving order
         seen = set()
         return [s for s in styles if not (s in seen or seen.add(s))]
-    else:
-        # Not mapped — use genre literal as Discogs style
-        # Capitalize properly: "hard techno" → "Hard Techno"
-        return [genre.strip().title()]
+    return [genre_clean.title()]
 
 
 GENRE_INCOMPATIBLE = {
@@ -1069,6 +1085,47 @@ def _get_artist_tags_listeners(artist):
         return tags_normalized, tags_compact, listeners
     except Exception:
         return [], [], 0
+
+_artist_styles_cache = {}
+
+def _get_artist_discogs_styles_light(artist):
+    if artist in _artist_styles_cache:
+        return _artist_styles_cache[artist]
+    try:
+        r = requests.get("https://api.discogs.com/database/search",
+                         params={"q": artist, "type": "artist", "per_page": 1,
+                                 "token": DISCOGS_TOKEN},
+                         timeout=5).json()
+        styles = []
+        if r.get("results"):
+            result = r["results"][0]
+            styles = result.get("style", [])
+            if not styles:
+                genre = result.get("genre", [])
+                styles = genre if isinstance(genre, list) else [genre] if genre else []
+        _artist_styles_cache[artist] = styles
+        return styles
+    except Exception as e:
+        log.error(f"Discogs style discovery for {artist}: {e}")
+        return []
+
+def _discover_and_add_styles(artists):
+    global tag_index
+    sample = artists[:min(10, len(artists))]
+    new_styles_added = 0
+    for artist in sample:
+        styles = _get_artist_discogs_styles_light(artist)
+        for style in styles:
+            if len(style) <= 3 or style in ["Rock", "Pop", "Electronic", "Jazz"]:
+                continue
+            if style not in tag_index:
+                tag_index[style] = 1
+                new_styles_added += 1
+            else:
+                tag_index[style] = tag_index.get(style, 0) + 1
+    if new_styles_added > 0:
+        save_tag_index()
+        log.info(f"Auto-discovered {new_styles_added} new styles from {len(sample)} artists")
 
 def _artist_matches_genre(artist, valid_genres):
     """Return True if artist tags don't contain incompatible genres."""
@@ -2296,7 +2353,8 @@ def _get_artist_full_info(artist_query):
             tag_name = t["name"].title()
             if not _is_valid_tag(tag_name):
                 continue
-            tag_index[tag_name] = tag_index.get(tag_name, 0) + t.get("count", 1)
+            tag_discogs = tag_name.strip().title()
+            tag_index[tag_discogs] = tag_index.get(tag_discogs, 0) + t.get("count", 1)
         save_tag_index()
         info["albums"] = _mb_studio_albums(mbid)
 
@@ -2316,7 +2374,8 @@ def _get_artist_full_info(artist_query):
                     label_counter[lbl] = label_counter.get(lbl, 0) + 1
             for s in rel.get("style", []):
                 if _is_valid_tag(s):
-                    tag_index[s] = tag_index.get(s, 0) + 1
+                    tag_discogs = s.strip().title()
+                    tag_index[tag_discogs] = tag_index.get(tag_discogs, 0) + 1
             for g in rel.get("genre", []):
                 if _is_valid_tag(g):
                     tag_index[g] = tag_index.get(g, 0) + 1
@@ -2836,11 +2895,12 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
                 f"🔄 Restore {len(tag_blacklist)} hidden tag(s)",
                 callback_data="tags_restore_open"
             )])
+        buttons.append([InlineKeyboardButton("🗑️ Reset all tags", callback_data="tag_reset_confirm")])
         buttons.append([InlineKeyboardButton("✅ Done", callback_data=f"tags_page|{page}")])
     else:
         row = []
         for tag, count in page_tags:
-            row.append(InlineKeyboardButton(f"{tag.title()} ({count})", callback_data=safe_callback(f"map_style|{tag}")))
+            row.append(InlineKeyboardButton(f"{tag.title()} ({count})", callback_data=safe_callback(f"tag_style|{tag}")))
             if len(row) == 2:
                 buttons.append(row)
                 row = []
@@ -3180,19 +3240,20 @@ def handle_buttons(update, context):
                 max(DECADE_YEARS[d][1] for d in decades)
             ) if decades else None
 
-            pool = _mb_get_artists_by_genre(style, decades, limit=200)
+            discogs_styles = _resolve_genre_styles(style, decades)
+            pool = _get_era_artists_from_discogs(decades, mode="playlist",
+                                                  max_artists=100,
+                                                  style_override=discogs_styles)
 
-            # Fallback to Last.fm seeds if MB tag returns nothing
+            # Fallback to Last.fm seeds if Discogs returns nothing
             if not pool:
-                log.info(f"[Oracle-POC] No results for '{style}' — falling back to Last.fm seeds")
+                log.info(f"[Oracle-POC] Discogs empty for '{style}' — falling back to Last.fm")
                 pool = _get_era_artists_from_lastfm(style, decades, max_artists=150)
 
-            # Fallback to Discogs if both empty
+            # Fallback to MusicBrainz if both empty
             if not pool:
-                log.info(f"[Oracle-POC] Last.fm empty — falling back to Discogs")
-                pool = _get_era_artists_from_discogs(decades, mode="playlist",
-                                                      max_artists=100,
-                                                      style_override=_resolve_genre_styles(style, decades))
+                log.info(f"[Oracle-POC] Last.fm empty — falling back to MusicBrainz")
+                pool = _mb_get_artists_by_genre(style, decades, limit=200)
 
             if _is_cancelled(chat_id):
                 _cancel_working(sent, timer)
@@ -3260,6 +3321,7 @@ def handle_buttons(update, context):
             _update_user_genre_profile(chat_id, style, decades)
 
             _cancel_working(sent, timer)
+            _discover_and_add_styles([track["artist"] for track in tracks])
             era_tag2 = f" — {_decade_label_from_set(decades)}" if decades else " — ∞ All Time"
             send_playlist(message, tracks, title=f"🎸 {style.title()}{era_tag2}",
                           branded=False, chat_id=chat_id, size=GENRE_PLAYLIST_SIZE)
@@ -3553,6 +3615,10 @@ def handle_buttons(update, context):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
+    # ── tag_style: genre era prompt launched from /tags view ──────────────────
+    elif action == "tag_style":
+        _genre_era_prompt(query.edit_message_text, chat_id, value, "tags_page|0")
+
     # ── map_style ─────────────────────────────────────────────────────────────
     elif action == "map_style":
         mem          = map_memory.get(chat_id, {})
@@ -3732,12 +3798,45 @@ def handle_buttons(update, context):
         to_restore = _pending_tag_restores.pop(chat_id, set())
         for tag in to_restore:
             tag_blacklist.discard(tag.lower())
-            if tag.lower() not in tag_index:
-                tag_index[tag.lower()] = 1
+            tag_discogs = tag.strip().title()
+            if tag_discogs not in tag_index:
+                tag_index[tag_discogs] = 1
         if to_restore:
             save_tag_index()
             save_tag_blacklist()
         _render_tags(message, page=0, chat_id=chat_id)
+
+    # ── tag_reset_confirm: show full-reset warning ────────────────────────────
+    elif action == "tag_reset_confirm":
+        visible_count = len([t for t in tag_index if _is_valid_tag(t)])
+        hidden_count  = len(tag_blacklist)
+        query.edit_message_text(
+            "⚠️ Reset all tags?\n\n"
+            f"This will permanently delete:\n"
+            f"• {visible_count} visible tag(s)\n"
+            f"• {hidden_count} hidden tag(s)\n\n"
+            "Your entire tag collection will be wiped.\n"
+            "New tags will accumulate again as you use Kurator.\n\n"
+            "This cannot be undone.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes, reset all tags", callback_data="tag_reset_exec")],
+                [InlineKeyboardButton("← Cancel",              callback_data="tags_edit|0")],
+            ])
+        )
+
+    elif action == "tag_reset_exec":
+        tag_index.clear()
+        tag_blacklist.clear()
+        _pending_tag_deletes.pop(chat_id, None)
+        _pending_tag_restores.pop(chat_id, None)
+        save_tag_index()
+        save_tag_blacklist()
+        query.edit_message_text(
+            "🗑️ Tags reset.\n\nAll visible and hidden tags removed.\n\nNew tags will build up as you use Kurator.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")],
+            ])
+        )
 
     # ── soundiiz_help ─────────────────────────────────────────────────────────
     elif action == "soundiiz_help":
