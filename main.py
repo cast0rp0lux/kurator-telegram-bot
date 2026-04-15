@@ -21,7 +21,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.6)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.6.1)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
@@ -1111,12 +1111,31 @@ def _get_artist_discogs_styles_light(artist):
 
 def _discover_and_add_styles(artists):
     global tag_index
+    STYLE_BLACKLIST = {
+        "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
+        "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
+        "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
+        "Non-Music", "Brass & Military", "Folk, World, & Country",
+        "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
+        "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
+        "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
+        "Comedy", "Novelty", "Parody", "Education", "Radioplay",
+        "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
+        "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
+        "Experimental", "Ambient", "Noise",
+    }
     sample = artists[:min(10, len(artists))]
     new_styles_added = 0
     for artist in sample:
         styles = _get_artist_discogs_styles_light(artist)
         for style in styles:
-            if len(style) <= 3 or style in ["Rock", "Pop", "Electronic", "Jazz"]:
+            if len(style) <= 4:
+                continue
+            if style in STYLE_BLACKLIST:
+                continue
+            if "," in style or "&" in style:
+                continue
+            if any(word in style.lower() for word in ["music", "various", "compilation", "mix"]):
                 continue
             if style not in tag_index:
                 tag_index[style] = 1
@@ -1125,7 +1144,7 @@ def _discover_and_add_styles(artists):
                 tag_index[style] = tag_index.get(style, 0) + 1
     if new_styles_added > 0:
         save_tag_index()
-        log.info(f"Auto-discovered {new_styles_added} new styles from {len(sample)} artists")
+        log.info(f"Auto-discovered {new_styles_added} new styles filtered")
 
 def _artist_matches_genre(artist, valid_genres):
     """Return True if artist tags don't contain incompatible genres."""
@@ -2348,14 +2367,6 @@ def _get_artist_full_info(artist_query):
         if end:   info["end_year"]   = end[:4]
         tags = sorted(mb.get("tags", []), key=lambda t: t.get("count", 0), reverse=True)
         info["genres"] = [t["name"].title() for t in tags[:4]]
-        # Add MusicBrainz tags to tag index — skip blacklisted tags
-        for t in tags[:8]:
-            tag_name = t["name"].title()
-            if not _is_valid_tag(tag_name):
-                continue
-            tag_discogs = tag_name.strip().title()
-            tag_index[tag_discogs] = tag_index.get(tag_discogs, 0) + t.get("count", 1)
-        save_tag_index()
         info["albums"] = _mb_studio_albums(mbid)
 
     # ── Discogs — label extraction ────────────────────────────────────────────
@@ -2372,14 +2383,6 @@ def _get_artist_full_info(artist_query):
             for lbl in rel.get("label", []):
                 if lbl and lbl.lower() not in ("not on label", "unknown", "self-released"):
                     label_counter[lbl] = label_counter.get(lbl, 0) + 1
-            for s in rel.get("style", []):
-                if _is_valid_tag(s):
-                    tag_discogs = s.strip().title()
-                    tag_index[tag_discogs] = tag_index.get(tag_discogs, 0) + 1
-            for g in rel.get("genre", []):
-                if _is_valid_tag(g):
-                    tag_index[g] = tag_index.get(g, 0) + 1
-        save_tag_index()
         if label_counter:
             info["label"] = max(label_counter, key=label_counter.get)
     except Exception as e:
