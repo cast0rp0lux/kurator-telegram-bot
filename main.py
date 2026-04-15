@@ -2505,7 +2505,7 @@ def playlist(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     if context.args:
-        msg.reply_text(f"Para playlists por género usa /genre {' '.join(context.args)}")
+        msg.reply_text(f"For genre playlists use /genre {' '.join(context.args)}")
         return
     _pending_gen[chat_id] = {"action": "playlist", "back": "cmd|picks_menu"}
     msg.reply_text(
@@ -3765,8 +3765,7 @@ def handle_buttons(update, context):
             nav.append(InlineKeyboardButton("Next →", callback_data=f"sp_expand|{key}|{page+1}"))
         if nav:
             buttons.append(nav)
-        buttons.append([InlineKeyboardButton("← Back",      callback_data=f"export_back|{key}")])
-        buttons.append([InlineKeyboardButton("🦍 Main menu", callback_data="cmd|menu")])
+        buttons.append([InlineKeyboardButton("← Back", callback_data=f"export_back|{key}")])
         query.edit_message_text(
             f"Track links — page {page+1}/{total_pages}",
             reply_markup=InlineKeyboardMarkup(buttons)
