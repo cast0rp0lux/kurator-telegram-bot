@@ -2899,7 +2899,7 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
     else:
         row = []
         for tag, count in page_tags:
-            row.append(InlineKeyboardButton(f"{tag.title()} ({count})", callback_data=safe_callback(f"map_style|{tag}")))
+            row.append(InlineKeyboardButton(f"{tag.title()} ({count})", callback_data=safe_callback(f"tag_style|{tag}")))
             if len(row) == 2:
                 buttons.append(row)
                 row = []
@@ -3613,6 +3613,10 @@ def handle_buttons(update, context):
             f"🏷️ {display_name} — Styles{page_label}",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
+
+    # ── tag_style: genre era prompt launched from /tags view ──────────────────
+    elif action == "tag_style":
+        _genre_era_prompt(query.edit_message_text, chat_id, value, "tags_page|0")
 
     # ── map_style ─────────────────────────────────────────────────────────────
     elif action == "map_style":
