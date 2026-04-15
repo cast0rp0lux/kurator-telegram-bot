@@ -3911,6 +3911,7 @@ dp.add_handler(CallbackQueryHandler(handle_buttons))
 # Registrar comandos para activar el botón ☰ nativo de Telegram
 from telegram import BotCommand
 try:
+    updater.bot.delete_my_commands()
     updater.bot.set_my_commands([
         BotCommand("start",    "🍌 Main menu"),
         BotCommand("playlist", "🎧 Kurator's Playlist"),
