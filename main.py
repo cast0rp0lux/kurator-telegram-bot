@@ -2184,24 +2184,30 @@ def _try_track_from_singles_eps(artist, mbid, lo, hi, listener_cap):
                 valid = [t for t in tracks if not _is_live_track(t.get("name", ""))]
                 if not valid:
                     valid = tracks
-                random.shuffle(valid)
-                for t in valid:
+                # B-sides first (score 2), then A-side (score 1)
+                # Last.fm returns tracks in order: index 0 = A-side, index 1+ = B-sides
+                b_sides = valid[1:]
+                a_sides = valid[:1]
+                random.shuffle(b_sides)
+                ordered = b_sides + a_sides
+                for t in ordered:
                     name  = t.get("name", "")
                     clean = _clean_track_title(name)
                     if clean.lower() in SEASONAL_TRACK_BLACKLIST:
                         continue
                     key = f"{normalize(artist)}-{normalize(clean)}"
                     if not track_in_history(key):
-                        log.info(f"Singles fallback: '{artist}' → '{clean}' (via {title})")
+                        side = "B-side" if t in b_sides else "A-side"
+                        log.info(f"Singles fallback ({side}): '{artist}' → '{clean}' (via {title})")
                         return (artist, clean, key)
         except Exception:
             pass
-        # Last.fm had no tracklist — use the single title itself (A-side assumption)
+        # Last.fm had no tracklist — use single title as A-side (lowest priority)
         clean = _clean_track_title(title)
         if clean.lower() not in SEASONAL_TRACK_BLACKLIST:
             key = f"{normalize(artist)}-{normalize(clean)}"
             if not track_in_history(key):
-                log.info(f"Singles fallback (A-side): '{artist}' → '{clean}'")
+                log.info(f"Singles fallback (A-side title): '{artist}' → '{clean}'")
                 return (artist, clean, key)
     return None
 
