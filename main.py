@@ -196,7 +196,8 @@ SIMILAR_EXPANSION   = 60
 PLAYLIST_SIZE       = 50
 GENRE_PLAYLIST_SIZE = 50
 RARE_PLAYLIST_SIZE  = 50
-RARE_MAX_LISTENERS  = 500_000
+RARE_MAX_LISTENERS             = 500_000
+SINGLES_FALLBACK_LISTENER_CAP  = 1_000_000  # only artists below this get the singles/EPs fallback
 RARE_CANDIDATE_CAP  = 150
 TAGS_PAGE_SIZE      = 10
 CALLBACK_DATA_MAX   = 60
@@ -500,6 +501,13 @@ def _fetch_listeners(artist):
         listeners = 0
     return artist, listeners
 
+def _get_listeners_cached(artist):
+    """Return cached listener count, fetching from Last.fm on first access."""
+    if artist not in _artist_listeners_cache:
+        _, count = _fetch_listeners(artist)
+        _artist_listeners_cache[artist] = count
+    return _artist_listeners_cache[artist]
+
 def expand_artist_graph(seed_artists):
     pool = set()
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -612,14 +620,17 @@ def _fetch_track_from_early_albums(artist, decade_years=None):
         # Step 2: get studio albums ordered by year
         albums = _mb_studio_albums(mbid)
         if not albums:
-            return None if decade_years else _fetch_top_track(artist)
+            if decade_years:
+                lo, hi = decade_years
+                return _try_track_from_singles_eps(artist, mbid, lo, hi, SINGLES_FALLBACK_LISTENER_CAP)
+            return _fetch_top_track(artist)
 
         # Step 3: filter by era if specified, else take first 4
         if decade_years:
             lo, hi = decade_years
             era_albums = [a for a in albums if a.get("year") and lo <= int(a["year"]) <= hi]
             if not era_albums:
-                return None  # No albums in era — discard, don't fallback
+                return _try_track_from_singles_eps(artist, mbid, lo, hi, SINGLES_FALLBACK_LISTENER_CAP)
             candidate_albums = era_albums[:5]
         else:
             candidate_albums = albums[:4]
@@ -1361,7 +1372,7 @@ def _fetch_track_for_genre(artist, decade_year_range, min_listeners=0):
                 lo, hi = decade_year_range
                 era_albums = [a for a in albums if a.get("year") and lo <= int(a["year"]) <= hi]
                 if not era_albums:
-                    return None
+                    return _try_track_from_singles_eps(artist, mbid, lo, hi, SINGLES_FALLBACK_LISTENER_CAP)
                 random.shuffle(era_albums)
                 for album in era_albums[:3]:
                     try:
@@ -2117,6 +2128,82 @@ def _mb_studio_albums(mbid):
 
     albums.sort(key=lambda a: a["year"] or "9999")
     return albums
+
+def _mb_singles_eps(mbid):
+    """
+    Fetch singles and EPs for an artist from MusicBrainz.
+    Returns [{title, year}] sorted by year asc, deduplicated.
+    """
+    results = []
+    seen    = set()
+    for mb_type, primary_label in [("single", "Single"), ("ep", "EP")]:
+        data = _mb_get("release-group/", {"artist": mbid, "type": mb_type, "limit": 100})
+        for rg in data.get("release-groups", []):
+            if rg.get("primary-type", "") != primary_label:
+                continue
+            secondary = [s.lower() for s in rg.get("secondary-types", [])]
+            if any(s in {"live", "compilation", "remix", "interview"} for s in secondary):
+                continue
+            title = rg.get("title", "")
+            if not title:
+                continue
+            key = normalize(title)
+            if key in seen:
+                continue
+            seen.add(key)
+            year = (rg.get("first-release-date") or "")[:4]
+            results.append({"title": title, "year": year})
+    results.sort(key=lambda r: r["year"] or "9999")
+    return results
+
+def _try_track_from_singles_eps(artist, mbid, lo, hi, listener_cap):
+    """
+    Fallback for artists with no studio albums in the target era.
+    Guards with listener_cap — skips mainstream artists (> 1M listeners).
+    Tries singles/EPs from MusicBrainz filtered to [lo, hi].
+    """
+    listeners = _get_listeners_cached(artist)
+    if listeners > listener_cap:
+        log.debug(f"Singles fallback skipped for '{artist}': {listeners:,} > cap")
+        return None
+
+    singles    = _mb_singles_eps(mbid)
+    era_singles = [s for s in singles if s.get("year") and lo <= int(s["year"]) <= hi]
+    if not era_singles:
+        return None
+
+    random.shuffle(era_singles)
+    for single in era_singles[:8]:
+        title = single["title"]
+        try:
+            data   = lastfm("album.getinfo", artist=artist, album=title)
+            tracks = data.get("album", {}).get("tracks", {}).get("track", [])
+            if tracks:
+                if isinstance(tracks, dict):
+                    tracks = [tracks]
+                valid = [t for t in tracks if not _is_live_track(t.get("name", ""))]
+                if not valid:
+                    valid = tracks
+                random.shuffle(valid)
+                for t in valid:
+                    name  = t.get("name", "")
+                    clean = _clean_track_title(name)
+                    if clean.lower() in SEASONAL_TRACK_BLACKLIST:
+                        continue
+                    key = f"{normalize(artist)}-{normalize(clean)}"
+                    if not track_in_history(key):
+                        log.info(f"Singles fallback: '{artist}' → '{clean}' (via {title})")
+                        return (artist, clean, key)
+        except Exception:
+            pass
+        # Last.fm had no tracklist — use the single title itself (A-side assumption)
+        clean = _clean_track_title(title)
+        if clean.lower() not in SEASONAL_TRACK_BLACKLIST:
+            key = f"{normalize(artist)}-{normalize(clean)}"
+            if not track_in_history(key):
+                log.info(f"Singles fallback (A-side): '{artist}' → '{clean}'")
+                return (artist, clean, key)
+    return None
 
 def _mb_label_artists(label_name):
     """
