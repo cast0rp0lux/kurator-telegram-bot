@@ -2499,7 +2499,7 @@ Decade filtering takes up to 60 seconds. Kurator cross-checks artists against mu
 def start(update, context):
     chat_id = update.effective_chat.id
     if is_onboarded(chat_id):
-        update.message.reply_text("🍌", reply_markup=_persistent_keyboard())
+        update.message.reply_text("🦍", reply_markup=_persistent_keyboard())
         update.message.reply_text(
             f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.",
             parse_mode="HTML",
