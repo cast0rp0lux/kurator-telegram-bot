@@ -21,7 +21,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.5)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.6)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
