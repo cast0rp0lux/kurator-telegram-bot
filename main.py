@@ -7,10 +7,9 @@ import time
 import tempfile
 import itertools
 import threading
-import secrets
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 import requests
 from flask import Flask, request as flask_request
@@ -179,15 +178,7 @@ LASTFM_USER    = "burbq"
 LASTFM_API     = os.environ["LASTFM_API_KEY"]
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 DISCOGS_TOKEN  = os.environ["DISCOGS_TOKEN"]
-YT_CLIENT_ID     = os.environ.get("YT_CLIENT_ID", "")
-YT_CLIENT_SECRET = os.environ.get("YT_CLIENT_SECRET", "")
-YT_REDIRECT_URI  = "https://kurator-telegram-bot-production.up.railway.app/oauth/callback"
-YT_SCOPE         = "https://www.googleapis.com/auth/youtube"
 
-# YouTube OAuth state
-_yt_tokens         = {}  # chat_id → {access_token, refresh_token, expires_at}
-_yt_oauth_states   = {}  # state_token → chat_id
-_yt_pending_export = {}  # chat_id → {tracks, title}
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 SCROBBLE_LIMIT      = 600
@@ -2409,7 +2400,7 @@ def _export_buttons(key, map_chat_id=None):
     """Expanded export options."""
     buttons = [
         [InlineKeyboardButton("🟣 Export via Soundiiz",      callback_data=f"soundiiz_help|{key}")],
-        [InlineKeyboardButton("🔴 Export to YouTube Music",  callback_data=f"yt_export|{key}")],
+
         [InlineKeyboardButton("🟢 Open Spotify links",       callback_data=f"sp_expand|{key}|0")],
         [InlineKeyboardButton("← Back",                      callback_data=f"export_collapse|{key}")],
     ]
@@ -3767,38 +3758,6 @@ def handle_buttons(update, context):
             ])
         )
 
-    # ── yt_export ─────────────────────────────────────────────────────────────
-    elif action == "yt_export":
-        key    = value
-        stored = _track_store.get(key, {})
-        tracks = stored.get("tracks", []) if isinstance(stored, dict) else stored
-        title  = stored.get("title", "Kurator Playlist") if isinstance(stored, dict) else "Kurator Playlist"
-        if not tracks:
-            query.answer("Playlist expired. Please generate again.")
-            return
-        token = _yt_token(chat_id)
-        if token:
-            # Already connected — export directly
-            query.answer("Creating YouTube Music playlist…")
-            threading.Thread(
-                target=_yt_export,
-                args=(query.bot, chat_id, tracks, title),
-                daemon=True
-            ).start()
-        else:
-            # Need to connect — store pending export and send auth URL
-            _yt_pending_export[chat_id] = {"tracks": tracks, "title": title}
-            auth_url = _yt_auth_url(chat_id)
-            query.answer()
-            query.edit_message_text(
-                "🔴 Connect YouTube Music\n\nTap the button below to connect your Google account. "
-                "Your playlist will be created automatically after connecting.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔴 Connect Google account", url=auth_url)],
-                    [InlineKeyboardButton("← Back", callback_data=f"export_back|{key}")],
-                ])
-            )
-
     # ── export_expand: show full export options ───────────────────────────────
     elif action == "export_expand":
         query.edit_message_reply_markup(
@@ -3867,147 +3826,9 @@ def handle_buttons(update, context):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-# ─── YouTube Music OAuth ──────────────────────────────────────────────────────
-
-def _yt_auth_url(chat_id):
-    state = secrets.token_urlsafe(16)
-    _yt_oauth_states[state] = chat_id
-    params = {
-        "client_id":     YT_CLIENT_ID,
-        "redirect_uri":  YT_REDIRECT_URI,
-        "response_type": "code",
-        "scope":         YT_SCOPE,
-        "access_type":   "offline",
-        "prompt":        "consent",
-        "state":         state,
-    }
-    return f"https://accounts.google.com/o/oauth2/auth?{urlencode(params)}"
-
-def _yt_exchange_code(code):
-    r = requests.post("https://oauth2.googleapis.com/token", data={
-        "code":          code,
-        "client_id":     YT_CLIENT_ID,
-        "client_secret": YT_CLIENT_SECRET,
-        "redirect_uri":  YT_REDIRECT_URI,
-        "grant_type":    "authorization_code",
-    }, timeout=10)
-    return r.json()
-
-def _yt_refresh(chat_id):
-    tokens = _yt_tokens.get(chat_id, {})
-    if not tokens.get("refresh_token"):
-        return None
-    r = requests.post("https://oauth2.googleapis.com/token", data={
-        "client_id":     YT_CLIENT_ID,
-        "client_secret": YT_CLIENT_SECRET,
-        "refresh_token": tokens["refresh_token"],
-        "grant_type":    "refresh_token",
-    }, timeout=10)
-    data = r.json()
-    if "access_token" in data:
-        _yt_tokens[chat_id]["access_token"] = data["access_token"]
-        _yt_tokens[chat_id]["expires_at"]   = time.time() + data.get("expires_in", 3600)
-        return data["access_token"]
-    return None
-
-def _yt_token(chat_id):
-    tokens = _yt_tokens.get(chat_id, {})
-    if not tokens:
-        return None
-    if time.time() > tokens.get("expires_at", 0) - 60:
-        return _yt_refresh(chat_id)
-    return tokens.get("access_token")
-
-def _yt_create_playlist(token, title):
-    r = requests.post(
-        "https://www.googleapis.com/youtube/v3/playlists",
-        params={"part": "snippet,status"},
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "snippet": {"title": title, "description": "Generated by Kurator 📀"},
-            "status":  {"privacyStatus": "private"},
-        },
-        timeout=10
-    )
-    data  = r.json()
-    pl_id = data.get("id")
-    return pl_id, f"https://music.youtube.com/playlist?list={pl_id}" if pl_id else None
-
-def _yt_search_video(token, query):
-    r = requests.get(
-        "https://www.googleapis.com/youtube/v3/search",
-        params={"part": "snippet", "q": query, "type": "video", "maxResults": 1},
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=10
-    )
-    items = r.json().get("items", [])
-    return items[0]["id"]["videoId"] if items else None
-
-def _yt_add_video(token, playlist_id, video_id):
-    requests.post(
-        "https://www.googleapis.com/youtube/v3/playlistItems",
-        params={"part": "snippet"},
-        headers={"Authorization": f"Bearer {token}"},
-        json={"snippet": {
-            "playlistId": playlist_id,
-            "resourceId": {"kind": "youtube#video", "videoId": video_id}
-        }},
-        timeout=10
-    )
-
-def _yt_export(bot, chat_id, tracks, title):
-    token = _yt_token(chat_id)
-    if not token:
-        bot.send_message(chat_id, "❌ YouTube session expired. Please reconnect — tap Export to YouTube Music.")
-        return
-    bot.send_message(chat_id, "🔴 Creating YouTube Music playlist…")
-    pl_id, pl_url = _yt_create_playlist(token, title)
-    if not pl_id:
-        bot.send_message(chat_id, "❌ Could not create playlist. Please try again.")
-        return
-    added = skipped = 0
-    for track in tracks:
-        video_id = _yt_search_video(token, track)
-        if video_id:
-            _yt_add_video(token, pl_id, video_id)
-            added += 1
-        else:
-            skipped += 1
-        time.sleep(0.2)
-    skip_note = f" ({skipped} not found)" if skipped else ""
-    bot.send_message(chat_id,
-        f"🍌 {added} tracks added to YouTube Music{skip_note}\n\n↗ {pl_url}",
-        disable_web_page_preview=False)
-
-# ─── Flask OAuth server ───────────────────────────────────────────────────────
+# ─── Flask server ─────────────────────────────────────────────────────────────
 
 flask_app = Flask(__name__)
-
-@flask_app.route("/oauth/callback")
-def oauth_callback():
-    code    = flask_request.args.get("code")
-    state   = flask_request.args.get("state")
-    chat_id = _yt_oauth_states.pop(state, None)
-    if not chat_id or not code:
-        return "Invalid request.", 400
-    data = _yt_exchange_code(code)
-    if "access_token" not in data:
-        return "Authentication failed.", 400
-    _yt_tokens[chat_id] = {
-        "access_token":  data["access_token"],
-        "refresh_token": data.get("refresh_token"),
-        "expires_at":    time.time() + data.get("expires_in", 3600),
-    }
-    # Export pending playlist if any
-    pending = _yt_pending_export.pop(chat_id, None)
-    if pending:
-        threading.Thread(
-            target=_yt_export,
-            args=(updater.bot, chat_id, pending["tracks"], pending["title"]),
-            daemon=True
-        ).start()
-        return "<h2>Connected! Kurator is creating your YouTube Music playlist...</h2>", 200
-    return "<h2>Connected to YouTube Music! Go back to Kurator.</h2>", 200
 
 @flask_app.route("/health")
 def health():
