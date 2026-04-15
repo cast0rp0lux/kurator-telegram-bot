@@ -2895,6 +2895,7 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
                 f"🔄 Restore {len(tag_blacklist)} hidden tag(s)",
                 callback_data="tags_restore_open"
             )])
+        buttons.append([InlineKeyboardButton("🗑️ Reset all tags", callback_data="tag_reset_confirm")])
         buttons.append([InlineKeyboardButton("✅ Done", callback_data=f"tags_page|{page}")])
     else:
         row = []
@@ -3804,6 +3805,38 @@ def handle_buttons(update, context):
             save_tag_index()
             save_tag_blacklist()
         _render_tags(message, page=0, chat_id=chat_id)
+
+    # ── tag_reset_confirm: show full-reset warning ────────────────────────────
+    elif action == "tag_reset_confirm":
+        visible_count = len([t for t in tag_index if _is_valid_tag(t)])
+        hidden_count  = len(tag_blacklist)
+        query.edit_message_text(
+            "⚠️ Reset all tags?\n\n"
+            f"This will permanently delete:\n"
+            f"• {visible_count} visible tag(s)\n"
+            f"• {hidden_count} hidden tag(s)\n\n"
+            "Your entire tag collection will be wiped.\n"
+            "New tags will accumulate again as you use Kurator.\n\n"
+            "This cannot be undone.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes, reset all tags", callback_data="tag_reset_exec")],
+                [InlineKeyboardButton("← Cancel",              callback_data="tags_edit|0")],
+            ])
+        )
+
+    elif action == "tag_reset_exec":
+        tag_index.clear()
+        tag_blacklist.clear()
+        _pending_tag_deletes.pop(chat_id, None)
+        _pending_tag_restores.pop(chat_id, None)
+        save_tag_index()
+        save_tag_blacklist()
+        query.edit_message_text(
+            "🗑️ Tags reset.\n\nAll visible and hidden tags removed.\n\nNew tags will build up as you use Kurator.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")],
+            ])
+        )
 
     # ── soundiiz_help ─────────────────────────────────────────────────────────
     elif action == "soundiiz_help":
