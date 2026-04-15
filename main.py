@@ -2391,7 +2391,7 @@ def _export_collapsed_buttons(key, map_chat_id=None):
         display_name = mem.get("display_name", "")
         if display_name:
             buttons.append([InlineKeyboardButton(
-                f"🗺️ Back to {display_name[:22]}",
+                f"🧑‍🎤 Back to {display_name[:22]}",
                 callback_data=f"map_back|{map_chat_id}"
             )])
     return buttons
@@ -3261,10 +3261,8 @@ def handle_buttons(update, context):
 
             _cancel_working(sent, timer)
             era_tag2 = f" — {_decade_label_from_set(decades)}" if decades else " — ∞ All Time"
-            from_map = chat_id in map_memory
             send_playlist(message, tracks, title=f"🎸 {style.title()}{era_tag2}",
-                          branded=False, chat_id=chat_id, size=GENRE_PLAYLIST_SIZE,
-                          map_chat_id=chat_id if from_map else None)
+                          branded=False, chat_id=chat_id, size=GENRE_PLAYLIST_SIZE)
             _clear_progress_msgs(chat_id)
             try: query.edit_message_text(f"🎸 {style.title()}{era_tag2}")
             except Exception: pass
