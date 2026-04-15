@@ -2950,7 +2950,12 @@ def _build_restore_buttons(chat_id, page=0):
 
 def _render_tags(message, page=0, edit_mode=False, chat_id=None):
     if not tag_index:
-        message.reply_text("No tags collected yet.\n\nUse /map <artist> to start building your library.")
+        message.reply_text(
+            "No tags collected yet.\n\n"
+            "Tags build up automatically as you use Kurator.\n\n"
+            "— /artist <name> — explore an artist and collect their genres\n"
+            "— /genre — play a genre playlist"
+        )
         return
     all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
     sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
@@ -3733,7 +3738,7 @@ def handle_buttons(update, context):
         all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         if not sorted_tags:
-            query.edit_message_text("Tag collection is empty.\n\nUse /map <artist> to build it up.",
+            query.edit_message_text("Tag collection is empty.\n\nUse /artist <name> to explore an artist and start collecting genres.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]]))
             return
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
