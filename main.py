@@ -79,13 +79,13 @@ CHANGELOG = {
     "6.1": {
         "date": "2026-04-13",
         "changes": [
-            "Botón persistente 🦍 Menú en barra inferior de Telegram",
+            "Botón persistente 🍌 Menú en barra inferior de Telegram",
             "Fix /changelog: ADMIN_CHAT_ID actualizado",
             "Fix /changelog: html.escape() en entradas para evitar crash HTML"
         ],
         "technical": [
             "_persistent_keyboard(): ReplyKeyboardMarkup con botón Menú",
-            "handle_text_reply: intercepta '🦍 Menú' antes de ForceReply logic",
+            "handle_text_reply: intercepta '🍌 Menú' antes de ForceReply logic",
             "start(): envía _persistent_keyboard() en primer uso post-onboarding"
         ]
     },
@@ -2415,7 +2415,7 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
             f"{title}\n\nNo new tracks found.\n\nYour history may be full.\nUse /clear to start fresh.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🗑️ Clear", callback_data="cmd|clear_confirm")],
-                [InlineKeyboardButton("🦍 Main menu",  callback_data="cmd|menu")],
+                [InlineKeyboardButton("🍌 Main menu",  callback_data="cmd|menu")],
             ])
         )
         return
@@ -2448,7 +2448,7 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
 
 def _persistent_keyboard():
     """Botón fijo en la barra inferior de Telegram para acceder al menú principal."""
-    return ReplyKeyboardMarkup([["🦍 Menú"]], resize_keyboard=True, input_field_placeholder="Escribe o pulsa Menú…")
+    return ReplyKeyboardMarkup([["🍌 Menú"]], resize_keyboard=True, input_field_placeholder="Escribe o pulsa Menú…")
 
 # ─── Main menu ────────────────────────────────────────────────────────────────
 
@@ -2499,7 +2499,7 @@ Decade filtering takes up to 60 seconds. Kurator cross-checks artists against mu
 def start(update, context):
     chat_id = update.effective_chat.id
     if is_onboarded(chat_id):
-        update.message.reply_text("🦍", reply_markup=_persistent_keyboard())
+        update.message.reply_text("🍌", reply_markup=_persistent_keyboard())
         update.message.reply_text(
             f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.",
             parse_mode="HTML",
@@ -2596,7 +2596,7 @@ def playlist(update, context):
         return
     _pending_gen[chat_id] = {"action": "playlist", "back": "cmd|picks_menu"}
     msg.reply_text(
-        "🎵 Kurator's Playlist",
+        "🎧 Kurator's Playlist",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="decade_confirm")],
             [InlineKeyboardButton("📅 Select a decade",   callback_data="decade_open")],
@@ -2765,7 +2765,7 @@ def _build_map_buttons(display_name, sorted_styles, info, chat_id):
             callback_data=f"map_styles|{chat_id}|0"
         )])
 
-    buttons.append([InlineKeyboardButton("🦍 Main menu", callback_data="cmd|menu")])
+    buttons.append([InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")])
     return buttons
 
 # ─── Tags renderer ────────────────────────────────────────────────────────────
@@ -2914,7 +2914,7 @@ def _render_status(message):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🗑️ Clear history",       callback_data="cmd|clear_confirm")],
             [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_open")],
-            [InlineKeyboardButton("🦍 Main menu",           callback_data="cmd|menu")],
+            [InlineKeyboardButton("🍌 Main menu",           callback_data="cmd|menu")],
         ])
     )
 
@@ -2925,7 +2925,7 @@ def _do_reset(message):
     _recent_artists = []
     message.reply_text(
         "History cleared.\n\nTags are kept.\nFresh tracks on your next request.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🦍 Main menu", callback_data="cmd|menu")]])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]])
     )
 
 def _show_clear_confirm(query):
@@ -2972,7 +2972,7 @@ def handle_buttons(update, context):
                 "▼ How deep do you want to go?",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🎵 Playlist — A curated selection", callback_data="cmd|playlist")],
+                    [InlineKeyboardButton("🎧 Playlist — A curated selection", callback_data="cmd|playlist")],
                     [InlineKeyboardButton("⛏️ Dig — Deeper cuts",              callback_data="cmd|dig")],
                     [InlineKeyboardButton("💎 Rare — Hidden gems only",        callback_data="cmd|rare")],
                     [InlineKeyboardButton("← Back", callback_data="cmd|menu")],
@@ -2997,7 +2997,7 @@ def handle_buttons(update, context):
 
         elif value == "playlist":
             _pending_decades.pop(chat_id, None)
-            _show_era_choice(query, chat_id, "🎵 Kurator's Playlist", "playlist", "cmd|picks_menu")
+            _show_era_choice(query, chat_id, "🎧 Kurator's Playlist", "playlist", "cmd|picks_menu")
 
         elif value == "dig":
             _pending_decades.pop(chat_id, None)
@@ -3040,7 +3040,7 @@ def handle_buttons(update, context):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🗑️ Clear history",       callback_data="cmd|clear_confirm")],
                     [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_open")],
-                    [InlineKeyboardButton("🦍 Main menu",           callback_data="cmd|menu")],
+                    [InlineKeyboardButton("🍌 Main menu",           callback_data="cmd|menu")],
                 ])
             )
 
@@ -3051,7 +3051,7 @@ def handle_buttons(update, context):
             _do_reset(message)
         elif value == "help":
             query.edit_message_text(_help_text(), parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🦍 Main menu", callback_data="cmd|menu")]]))
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]]))
 
     # ── decade_open: show decade toggle grid ─────────────────────────────────
     elif action == "decade_open":
@@ -3282,7 +3282,7 @@ def handle_buttons(update, context):
         else:
             # Picks flow — restore 🍌 GENERATE PLAYLIST screen
             parts = gen_action.split("|", 1)
-            title_map = {"playlist": "🎵 Kurator's Playlist", "dig": "⛏️ Kurator's Dig", "rare": "💎 Kurator's Rare"}
+            title_map = {"playlist": "🎧 Kurator's Playlist", "dig": "⛏️ Kurator's Dig", "rare": "💎 Kurator's Rare"}
             title = title_map.get(parts[0], "Generate playlist")
             _show_era_choice(query, chat_id, title, gen_action, back_cb)
 
@@ -3315,7 +3315,7 @@ def handle_buttons(update, context):
             _genre_era_prompt(query.edit_message_text, chat_id, style, back_cb)
         else:
             parts = gen_action.split("|", 1)
-            title_map = {"playlist": "🎵 Kurator's Playlist", "dig": "⛏️ Kurator's Dig", "rare": "💎 Kurator's Rare"}
+            title_map = {"playlist": "🎧 Kurator's Playlist", "dig": "⛏️ Kurator's Dig", "rare": "💎 Kurator's Rare"}
             title = title_map.get(parts[0], "Generate playlist")
             _show_era_choice(query, chat_id, title, gen_action, back_cb)
 
@@ -3420,7 +3420,7 @@ def handle_buttons(update, context):
         query.edit_message_text(
             f"{display_name} — {full_title}",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📀 Generate playlist", callback_data=safe_callback(f"album_playlist|{display_name}|{full_title}"))],
+                [InlineKeyboardButton("🎧 Generate playlist", callback_data=safe_callback(f"album_playlist|{display_name}|{full_title}"))],
                 [InlineKeyboardButton("🟢 Open in Spotify",   url=spotify_album_url(display_name, full_title))],
                 [InlineKeyboardButton(f"← Back",             callback_data=f"map_albums|{album_chat}")],
             ])
@@ -3670,7 +3670,7 @@ def handle_buttons(update, context):
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         if not sorted_tags:
             query.edit_message_text("Tag collection is empty.\n\nUse /map <artist> to build it up.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🦍 Main menu", callback_data="cmd|menu")]]))
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]]))
             return
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         page = min(page, total_pages - 1)
@@ -3849,7 +3849,7 @@ def handle_text_reply(update, context):
         return
 
     # Botón persistente de Menú — tiene prioridad sobre cualquier estado pendiente
-    if text in ("🦍 Menú", "Menú", "Menu", "menú", "menu"):
+    if text in ("🍌 Menú", "Menú", "Menu", "menú", "menu"):
         _pending_gen.pop(chat_id, None)
         msg.reply_text(
             f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.",
@@ -3912,8 +3912,8 @@ dp.add_handler(CallbackQueryHandler(handle_buttons))
 from telegram import BotCommand
 try:
     updater.bot.set_my_commands([
-        BotCommand("start",    "🦍 Main menu"),
-        BotCommand("playlist", "🎵 Kurator's Playlist"),
+        BotCommand("start",    "🍌 Main menu"),
+        BotCommand("playlist", "🎧 Kurator's Playlist"),
         BotCommand("dig",      "⛏️ Dig deeper"),
         BotCommand("rare",     "💎 Rare finds"),
         BotCommand("artist",   "🧑‍🎤 Explore an artist"),
