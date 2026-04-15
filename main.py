@@ -3742,7 +3742,17 @@ def handle_buttons(update, context):
     # ── soundiiz_help ─────────────────────────────────────────────────────────
     elif action == "soundiiz_help":
         key = value
-        query.edit_message_text(
+        # Collapse the playlist message (keep text, just hide the export options)
+        stored = _track_store.get(key, {})
+        mcid = stored.get("map_chat_id") if isinstance(stored, dict) else None
+        try:
+            query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(key, map_chat_id=mcid))
+            )
+        except Exception:
+            pass
+        # Send Soundiiz instructions as a new reply — playlist stays visible above
+        msg = message.reply_text(
             "📡 Export your playlist\n\n"
             "1. Go to Soundiiz — log in or create a free account\n\n"
             "2. Tap ··· top right — select \"Import playlist\"\n\n"
@@ -3751,10 +3761,19 @@ def handle_buttons(update, context):
             "5. Choose your platform: Spotify, Qobuz, Apple Music and more\n\n"
             "↗ soundiiz.com",
             disable_web_page_preview=True,
+        )
+        msg.edit_reply_markup(
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("← Back", callback_data=f"export_back|{key}")],
+                [InlineKeyboardButton("✕ Close", callback_data=f"delete_msg|{msg.message_id}")],
             ])
         )
+
+    # ── delete_msg: dismiss a helper message ──────────────────────────────────
+    elif action == "delete_msg":
+        try:
+            context.bot.delete_message(chat_id=chat_id, message_id=int(value))
+        except Exception:
+            pass
 
     # ── export_expand: show full export options ───────────────────────────────
     elif action == "export_expand":
@@ -3781,7 +3800,13 @@ def handle_buttons(update, context):
     # ── export_back ───────────────────────────────────────────────────────────
     elif action == "export_back":
         stored = _track_store.get(value, {})
-        text   = stored.get("text") if isinstance(stored, dict) else None
+        if not isinstance(stored, dict) or not stored:
+            query.edit_message_text(
+                "Playlist expired — generate a new one.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]])
+            )
+            return
+        text = stored.get("text")
         if text:
             query.edit_message_text(
                 text,
