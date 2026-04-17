@@ -21,10 +21,21 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.5)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.6)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.7.6": {
+        "date": "2026-04-17",
+        "changes": [
+            "Fix GENERATE PLAYLIST en Similar Artists: usaba pool filtrado (~12 artistas) en vez de lista Last.fm",
+            "similar_generate usa map_memory['similar'] (60 artistas raw) → playlists completas"
+        ],
+        "technical": [
+            "similar_generate: build_similar_artists_pool() reemplazado por map_memory['similar']",
+            "Fallback: last.fm artist.getsimilar limit=80 si map_memory vacío"
+        ]
+    },
     "6.7.5": {
         "date": "2026-04-17",
         "changes": [
@@ -3846,7 +3857,13 @@ def handle_buttons(update, context):
         artist = value
         query.edit_message_text(f"🎵 Generating playlist from {artist}'s scene…")
         sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
-        names  = build_similar_artists_pool(artist)
+        # Use the raw Last.fm similar list already stored in map_memory (unfiltered)
+        stored = map_memory.get(chat_id, {}).get("similar", [])
+        if not stored:
+            stored = [s["name"] for s in
+                      lastfm("artist.getsimilar", artist=artist, limit=80)
+                      .get("similarartists", {}).get("artist", [])]
+        names = [artist] + stored
         result = select_tracks(names, skip_recent=False)
         _cancel_working(sent, timer)
         send_playlist(message, result, title=f"🔗 {artist} — Similar artists",
