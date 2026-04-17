@@ -21,10 +21,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.1)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.2)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.8.2": {
+        "date": "2026-04-17",
+        "changes": [
+            "Función central _get_artist_primary_tags(): Discogs primero, Last.fm fallback",
+            "Tags display unificadas: tarjeta, Similar Artists y fallbacks usan misma fuente",
+            "Backend scoring (underground filter, pool building) mantiene Last.fm sin cambios"
+        ],
+        "technical": [
+            "_get_artist_primary_tags(): _get_artist_discogs_styles_light → combina con Last.fm si < 3",
+            "_render_similar fallback: _get_artist_tags_listeners → _get_artist_primary_tags",
+            "Card display: ya correcto vía sorted_styles (v6.8.0) — sin cambios",
+            "build_similar_artists_pool: sin cambios — sigue usando Last.fm para scoring"
+        ]
+    },
     "6.8.1": {
         "date": "2026-04-17",
         "changes": ["Tags simplificadas a 3 por artista en tarjeta y Similar Artists"],
@@ -1375,6 +1389,30 @@ def _get_artist_discogs_styles_light(artist):
         log.error(f"Discogs style discovery for {artist}: {e}")
         return []
 
+def _get_artist_primary_tags(artist):
+    """
+    Primary tags for display — Discogs first, Last.fm fallback.
+    Returns Title Case strings. Only for display; backend scoring still uses Last.fm.
+    """
+    discogs_styles = _get_artist_discogs_styles_light(artist)
+    if len(discogs_styles) >= 3:
+        return discogs_styles[:3]
+
+    lastfm_tags, _, _ = _get_artist_tags_listeners(artist)
+    # lastfm_tags is a list of normalized strings — title-case for display
+    lastfm_display = [t.title() for t in lastfm_tags]
+
+    if discogs_styles:
+        combined, seen = [], set()
+        for tag in discogs_styles + lastfm_display:
+            if tag.lower() not in seen:
+                seen.add(tag.lower())
+                combined.append(tag)
+        return combined[:3]
+
+    return lastfm_display[:3]
+
+
 def _discover_and_add_styles(artists):
     global tag_index
     STYLE_BLACKLIST = {
@@ -2207,8 +2245,7 @@ def _render_similar(query, artist, similar, page, chat_id):
     if card_genres:
         top_tags = [g for g in card_genres if not any(c.isdigit() for c in g) and len(g) <= 28][:3]
     else:
-        tags, _, _ = _get_artist_tags_listeners(artist)
-        top_tags = tags[:3] if tags else []
+        top_tags = _get_artist_primary_tags(artist)  # Discogs-first fallback
     tags_str  = " · ".join(top_tags) if top_tags else "Various styles"
     total_artists = len(similar)
 
