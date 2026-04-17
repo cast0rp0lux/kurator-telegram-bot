@@ -21,10 +21,21 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.7)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.8)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.7.8": {
+        "date": "2026-04-17",
+        "changes": [
+            "Fix tarjeta artista: tags con dígitos (ej. '2008 Universal Fire Victim') ya no aparecen",
+            "Tags filtradas también en fuente (Last.fm) antes de guardarlas en info['genres']"
+        ],
+        "technical": [
+            "_format_artist_card: filtra genres con dígitos o len > 28 antes de mostrar",
+            "_get_artist_full_info Last.fm path: filtra tags con dígitos o len > 28 al leer"
+        ]
+    },
     "6.7.7": {
         "date": "2026-04-17",
         "changes": [
@@ -2640,7 +2651,10 @@ def _get_artist_full_info(artist_query):
                 info["bio"] = clean
         if not info["genres"]:
             lfm_tags = artist_data.get("tags", {}).get("tag", [])
-            info["genres"] = [t["name"].title() for t in lfm_tags[:4]]
+            info["genres"] = [
+                t["name"].title() for t in lfm_tags
+                if not any(c.isdigit() for c in t["name"]) and len(t["name"]) <= 28
+            ][:4]
     except Exception as e:
         log.error(f"Last.fm artist info for '{artist_query}': {e}")
 
@@ -2671,7 +2685,10 @@ def _format_artist_card(artist_query, info):
     if meta:
         lines.append("  ·  ".join(meta))
     if info.get("genres"):
-        lines.append("🏷️ " + "  ·  ".join(info["genres"][:4]))
+        clean = [g for g in info["genres"]
+                 if not any(c.isdigit() for c in g) and len(g) <= 28]
+        if clean:
+            lines.append("🏷️ " + "  ·  ".join(clean[:4]))
     if info.get("label"):
         lines.append(f"🎙️ {info['label']}")
     return "\n".join(lines)
