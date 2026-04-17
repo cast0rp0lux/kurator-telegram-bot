@@ -21,10 +21,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.8)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.9)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.7.9": {
+        "date": "2026-04-17",
+        "changes": [
+            "Tags unificadas: Similar Artists y Trail usan los mismos géneros que la tarjeta del artista",
+            "Eliminado desacuerdo entre fuentes (Last.fm raw vs MusicBrainz+filtrado de la tarjeta)",
+            "Pipeline de similar artists más coherente: pool se construye desde los mismos tags que se muestran"
+        ],
+        "technical": [
+            "_render_similar: usa map_memory['info']['genres'] en vez de _get_artist_tags_listeners",
+            "build_similar_artists_pool: acepta card_genres opcional (evita llamada extra a Last.fm)",
+            "_expand_trail: acepta card_genres, lo pasa a build_similar_artists_pool",
+            "trail_confirm: lee card_genres de map_memory y los pasa a _expand_trail"
+        ]
+    },
     "6.7.8": {
         "date": "2026-04-17",
         "changes": [
@@ -691,13 +705,19 @@ def expand_artist_graph_rare(seed_artists):
 
 # ─── Similar artists (trail) ─────────────────────────────────────────────────
 
-def build_similar_artists_pool(artist):
+def build_similar_artists_pool(artist, card_genres=None):
     """
     Build artist pool from artist's tags via the genre system instead of
     Last.fm similar chain, avoiding mainstream creep.
+    card_genres: pre-computed genres from the artist card (info['genres']) — uses
+    these instead of _get_artist_tags_listeners so pool and card stay in sync.
     Returns: [artist] + filtered underground pool (max 150).
     """
-    tags, _, listeners = _get_artist_tags_listeners(artist)
+    if card_genres:
+        tags = [g.lower() for g in card_genres
+                if not any(c.isdigit() for c in g) and len(g) <= 28]
+    else:
+        tags, _, _ = _get_artist_tags_listeners(artist)
 
     if not tags or len(tags) < 2:
         log.info(f"Insufficient tags for {artist}, falling back to Last.fm similar")
@@ -722,12 +742,12 @@ def build_similar_artists_pool(artist):
     return final_pool
 
 
-def _expand_trail(artist, hops):
+def _expand_trail(artist, hops, card_genres=None):
     """
     Build trail using genre-based pool instead of multi-hop Last.fm similar chain.
-    Avoids mainstream creep by routing through underground filter.
+    card_genres: from map_memory['info']['genres'] — keeps pool in sync with the card.
     """
-    pool = build_similar_artists_pool(artist)
+    pool = build_similar_artists_pool(artist, card_genres=card_genres)
     if hops == 1:
         return pool[:60]
     return pool
@@ -2166,8 +2186,13 @@ def _render_similar(query, artist, similar, page, chat_id):
     start       = page * PAGE_SIZE
     page_items  = sorted(similar[start:start + PAGE_SIZE], key=lambda x: len(x))
 
-    tags, _, listeners = _get_artist_tags_listeners(artist)
-    top_tags  = tags[:3] if tags else []
+    # Use card genres from map_memory — same source as the artist card display
+    card_genres = map_memory.get(chat_id, {}).get("info", {}).get("genres", [])
+    if card_genres:
+        top_tags = [g for g in card_genres if not any(c.isdigit() for c in g) and len(g) <= 28][:3]
+    else:
+        tags, _, _ = _get_artist_tags_listeners(artist)
+        top_tags = tags[:3] if tags else []
     tags_str  = " · ".join(top_tags) if top_tags else "Various styles"
     total_artists = len(similar)
 
@@ -3871,16 +3896,17 @@ def handle_buttons(update, context):
         hop_labels = {1: "1 hop", 2: "2 hops"}
         query.edit_message_text(f"🔗 {artist} — Following the trail ({hop_labels.get(hops, '')})…")
         sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
+        card_genres = map_memory.get(chat_id, {}).get("info", {}).get("genres", [])
         if hops == 1:
             stored = map_memory.get(chat_id, {}).get("similar")
-            names  = stored if stored else _expand_trail(artist, 1)
+            names  = stored if stored else _expand_trail(artist, 1, card_genres=card_genres)
             history_tracks = history.get("tracks") or {}
             exhausted = sum(1 for n in names if any(k.startswith(normalize(n)+"-") for k in history_tracks))
             if names and exhausted / len(names) > 0.6:
                 log.info(f"Trail auto-expanding to 2 hops ({exhausted}/{len(names)} exhausted)")
-                names = _expand_trail(artist, 2)
+                names = _expand_trail(artist, 2, card_genres=card_genres)
         else:
-            names = _expand_trail(artist, hops)
+            names = _expand_trail(artist, hops, card_genres=card_genres)
         result = select_tracks(names, skip_recent=False)
         _cancel_working(sent, timer)
         send_playlist(message, result,
