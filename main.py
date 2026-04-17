@@ -21,10 +21,21 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.9)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.0)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.8.0": {
+        "date": "2026-04-17",
+        "changes": [
+            "Tags unificadas entre tarjeta y vista Styles: ambas usan Discogs como fuente primaria",
+            "Discogs (ponderado por número de releases) reemplaza MusicBrainz como fuente de géneros en tarjeta"
+        ],
+        "technical": [
+            "_render_map: si sorted_styles existe → info['genres'] = sorted_styles[:4] (siempre, no solo fallback)",
+            "Card, Similar Artists y pool de trail ahora usan los mismos géneros Discogs"
+        ]
+    },
     "6.7.9": {
         "date": "2026-04-17",
         "changes": [
@@ -3083,8 +3094,11 @@ def _render_map(message, artist_query, chat_id):
         log.info(f"Saved {tags_added} Discogs styles from artist card for '{artist_query}'")
 
     info = _get_artist_full_info(artist_query)
-    if not info["genres"]:
+    # Discogs styles (count-weighted) are more reliable than MusicBrainz tags — always prefer them
+    if sorted_styles:
         info["genres"] = [s for s, _ in sorted_styles[:4]]
+    elif not info["genres"]:
+        pass  # keep empty — card will just show no genre line
 
     display_name = _artist_display_name(info, artist_query)
 
