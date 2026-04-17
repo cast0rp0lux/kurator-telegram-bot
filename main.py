@@ -21,10 +21,15 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.0)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.1)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.8.1": {
+        "date": "2026-04-17",
+        "changes": ["Tags simplificadas a 3 por artista en tarjeta y Similar Artists"],
+        "technical": ["_format_artist_card clean[:4]→[:3], sorted_styles[:4]→[:3], MB tags[:4]→[:3]"]
+    },
     "6.8.0": {
         "date": "2026-04-17",
         "changes": [
@@ -2646,7 +2651,7 @@ def _get_artist_full_info(artist_query):
         if begin: info["begin_year"] = begin[:4]
         if end:   info["end_year"]   = end[:4]
         tags = sorted(mb.get("tags", []), key=lambda t: t.get("count", 0), reverse=True)
-        info["genres"] = [t["name"].title() for t in tags[:4]]
+        info["genres"] = [t["name"].title() for t in tags[:3]]
         info["albums"] = _mb_studio_albums(mbid)
 
     # ── Discogs — label extraction ────────────────────────────────────────────
@@ -2724,7 +2729,7 @@ def _format_artist_card(artist_query, info):
         clean = [g for g in info["genres"]
                  if not any(c.isdigit() for c in g) and len(g) <= 28]
         if clean:
-            lines.append("🏷️ " + "  ·  ".join(clean[:4]))
+            lines.append("🏷️ " + "  ·  ".join(clean[:3]))
     if info.get("label"):
         lines.append(f"🎙️ {info['label']}")
     return "\n".join(lines)
@@ -3096,7 +3101,7 @@ def _render_map(message, artist_query, chat_id):
     info = _get_artist_full_info(artist_query)
     # Discogs styles (count-weighted) are more reliable than MusicBrainz tags — always prefer them
     if sorted_styles:
-        info["genres"] = [s for s, _ in sorted_styles[:4]]
+        info["genres"] = [s for s, _ in sorted_styles[:3]]
     elif not info["genres"]:
         pass  # keep empty — card will just show no genre line
 
