@@ -21,7 +21,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.1)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.2)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
@@ -564,7 +564,7 @@ def build_similar_artists_pool(artist):
         similar = _fetch_similar_names(artist)[:50]
         return [artist] + similar
 
-    base_tags = [t for t, _ in tags[:3]]
+    base_tags = tags[:3]
     log.info(f"Building pool for {artist} from tags: {base_tags}")
 
     pool_genre = []
