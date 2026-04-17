@@ -25,6 +25,84 @@ BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.3)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.7.3": {
+        "date": "2026-04-17",
+        "changes": [
+            "Fix crash All Time mode: _get_era_artists_from_discogs con decades=None",
+            "Fix 'Back to artist' borraba la playlist al editarla",
+            "Playlist queda intacta; tarjeta del artista se envía como mensaje nuevo"
+        ],
+        "technical": [
+            "_get_era_artists_from_discogs: guard decades=None → [] si no hay style_override",
+            "_get_era_artists_from_discogs: rango 1950-2025 si style_override + decades=None",
+            "map_back: edit_message_reply_markup elimina botón Back, reply_text envía card nueva"
+        ]
+    },
+    "6.7.2": {
+        "date": "2026-04-17",
+        "changes": [
+            "Fix crash en Trail/Similar: tags es lista de strings, no tuplas"
+        ],
+        "technical": [
+            "build_similar_artists_pool: [t for t, _ in tags[:3]] → tags[:3]"
+        ]
+    },
+    "6.7.1": {
+        "date": "2026-04-17",
+        "changes": [
+            "Fix crash en Trail/Similar: _get_artist_tags_listeners devuelve 3 valores"
+        ],
+        "technical": [
+            "build_similar_artists_pool: tags, _ → tags, _, listeners"
+        ]
+    },
+    "6.7": {
+        "date": "2026-04-17",
+        "changes": [
+            "Similar Artists Redesign: Trail/Similar usa pool por género en vez de cadena Last.fm",
+            "Dynamic Era Detection: playlists All Time detectan década dominante vía MusicBrainz",
+            "Fix tags: estilos Discogs de la tarjeta de artista se guardan en tag_index (filtrados)",
+            "Fix _discover_and_add_styles: recibía strings en vez de nombres de artistas"
+        ],
+        "technical": [
+            "build_similar_artists_pool(): tags→género (80%) + Last.fm similar (20%) + underground filter",
+            "_expand_trail: reemplaza multi-hop Last.fm por build_similar_artists_pool()",
+            "_track_year_cache + _get_track_year_from_musicbrainz(artist, track)",
+            "detect_main_decade / should_apply_temporal_filter / filter_by_detected_era",
+            "Genre playlist All Time: filtra ±10 años si género concentrado en ≤2 décadas",
+            "_render_map: guarda Discogs styles filtrados a tag_index (misma blacklist que _discover_and_add_styles)",
+            "_discover_and_add_styles: recibe artists_used (list[str]) en vez de tracks (list[str])"
+        ]
+    },
+    "6.6.1": {
+        "date": "2026-04-17",
+        "changes": [
+            "Eliminado auto-add de tags basura desde explorar artista",
+            "MusicBrainz tags ya no se escriben en tag_index al explorar artista",
+            "Discogs styles/genres ya no se escriben en tag_index al explorar artista",
+            "_discover_and_add_styles: blacklist agresiva de 40+ términos genéricos"
+        ],
+        "technical": [
+            "_get_artist_full_info: eliminado bloque MB tags → tag_index",
+            "_get_artist_full_info: eliminado bloque Discogs styles/genres → tag_index (label kept)",
+            "_discover_and_add_styles: STYLE_BLACKLIST 40+ terms, min length 5, sin , ni &"
+        ]
+    },
+    "6.6": {
+        "date": "2026-04-17",
+        "changes": [
+            "Reset All Tags: botón en edit mode elimina visible + hidden con confirmación",
+            "Mensaje tags vacío actualizado: menciona /artist en vez de /map",
+            "Tags acumulan automáticamente al usar Kurator (explicación en mensaje vacío)",
+            "Sistema de versiones: cada commit actualiza BOT_VERSION y CHANGELOG"
+        ],
+        "technical": [
+            "_build_tags_buttons edit_mode: botón 'Reset all tags' → tag_reset_confirm",
+            "tag_reset_confirm: muestra conteo visible + hidden antes de ejecutar",
+            "tag_reset_exec: limpia tag_index + tag_blacklist + pending state, guarda ambos",
+            "_render_tags + tags_page: mensaje vacío con /artist y /genre en vez de /map"
+        ]
+    },
     "6.5": {
         "date": "2026-04-14",
         "changes": [
