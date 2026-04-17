@@ -21,7 +21,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.1)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
@@ -557,7 +557,7 @@ def build_similar_artists_pool(artist):
     Last.fm similar chain, avoiding mainstream creep.
     Returns: [artist] + filtered underground pool (max 150).
     """
-    tags, _ = _get_artist_tags_listeners(artist)
+    tags, _, listeners = _get_artist_tags_listeners(artist)
 
     if not tags or len(tags) < 2:
         log.info(f"Insufficient tags for {artist}, falling back to Last.fm similar")
