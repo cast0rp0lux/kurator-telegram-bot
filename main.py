@@ -21,10 +21,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.6)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.7)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.7.7": {
+        "date": "2026-04-17",
+        "changes": [
+            "Similar Artists: underground filter menos agresivo para pools nicho",
+            "Thresholds [3,2,1,0] en modo similar vs [5,4,3,2,1] en modo playlist",
+            "POCO: esperado 12→40-60 artistas disponibles para GENERATE PLAYLIST"
+        ],
+        "technical": [
+            "_filter_underground_artists: nuevo parámetro mode='playlist'|'similar'",
+            "mode='similar': thresholds=[3,2,1,0], log [Underground-Similar]",
+            "build_similar_artists_pool: pasa mode='similar' al filtro"
+        ]
+    },
     "6.7.6": {
         "date": "2026-04-17",
         "changes": [
@@ -690,7 +703,7 @@ def build_similar_artists_pool(artist):
     similar = _fetch_similar_names(artist)[:10]
 
     pool = list(set(pool_genre + similar))
-    pool = _filter_underground_artists(pool, genre=base_tags[0])
+    pool = _filter_underground_artists(pool, genre=base_tags[0], mode="similar")
     pool = [a for a in pool if normalize(a) != normalize(artist)]
 
     final_pool = [artist] + pool[:150]
@@ -1432,12 +1445,14 @@ def _compute_underground_score(artist, target_genre):
     return score
 
 
-def _filter_underground_artists(artists, genre, decades=None):
+def _filter_underground_artists(artists, genre, decades=None, mode="playlist"):
     """
     Score and filter artists by underground quality with adaptive thresholds.
     For niche genres (pool < 60), expands pool with Last.fm seeds.
     Progressive relaxation with dynamic thresholds based on pool size.
     Uses concurrent calls via ThreadPoolExecutor.
+    mode="similar": relaxed thresholds [3,2,1,0] for Similar Artists pools.
+    mode="playlist": standard thresholds [5,4,3,2,1] for genre playlists.
     """
     pool_size = len(artists)
     log.info(f"[Underground] Initial pool: {pool_size} artists for '{genre}'")
@@ -1504,9 +1519,12 @@ def _filter_underground_artists(artists, genre, decades=None):
 
     log.info(f"[Underground] Pool size: {current_pool}, min required: {min_required}")
     
-    # Universal rule: progressive thresholds [5,4,3,2,1] → always underground first
-    # Relax only if needed, never use artists with score < 1 directly
-    thresholds = [5, 4, 3, 2, 1]
+    # Progressive thresholds — relaxed for Similar Artists to fill thin pools
+    if mode == "similar":
+        thresholds = [3, 2, 1, 0]
+        log.info(f"[Underground-Similar] Using relaxed thresholds for Similar Artists")
+    else:
+        thresholds = [5, 4, 3, 2, 1]
     for threshold in thresholds:
         if threshold <= 2:
             # Hard cap: cuando el threshold relaja, bloquear artistas con >750k listeners
