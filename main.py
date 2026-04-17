@@ -21,7 +21,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.6.1)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
@@ -551,20 +551,46 @@ def expand_artist_graph_rare(seed_artists):
 
 # ─── Similar artists (trail) ─────────────────────────────────────────────────
 
+def build_similar_artists_pool(artist):
+    """
+    Build artist pool from artist's tags via the genre system instead of
+    Last.fm similar chain, avoiding mainstream creep.
+    Returns: [artist] + filtered underground pool (max 150).
+    """
+    tags, _ = _get_artist_tags_listeners(artist)
+
+    if not tags or len(tags) < 2:
+        log.info(f"Insufficient tags for {artist}, falling back to Last.fm similar")
+        similar = _fetch_similar_names(artist)[:50]
+        return [artist] + similar
+
+    base_tags = [t for t, _ in tags[:3]]
+    log.info(f"Building pool for {artist} from tags: {base_tags}")
+
+    pool_genre = []
+    for tag in base_tags:
+        pool_genre += _get_era_artists_from_lastfm(tag, decades=None, max_artists=80)
+
+    similar = _fetch_similar_names(artist)[:10]
+
+    pool = list(set(pool_genre + similar))
+    pool = _filter_underground_artists(pool, genre=base_tags[0])
+    pool = [a for a in pool if normalize(a) != normalize(artist)]
+
+    final_pool = [artist] + pool[:150]
+    log.info(f"Built pool of {len(final_pool)} artists for {artist}")
+    return final_pool
+
+
 def _expand_trail(artist, hops):
-    level1 = set(s["name"] for s in
-                 lastfm("artist.getsimilar", artist=artist, limit=60)
-                 .get("similarartists", {}).get("artist", []))
+    """
+    Build trail using genre-based pool instead of multi-hop Last.fm similar chain.
+    Avoids mainstream creep by routing through underground filter.
+    """
+    pool = build_similar_artists_pool(artist)
     if hops == 1:
-        return list(level1)
-    level2 = set()
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        for f in as_completed([ex.submit(_fetch_similar_names, a)
-                               for a in random.sample(list(level1), min(len(level1), 20))]):
-            try: level2.update(f.result())
-            except: pass
-    level2 -= level1 | {artist}
-    return list(level1 | level2)
+        return pool[:60]
+    return pool
 
 # ─── Track selection ──────────────────────────────────────────────────────────
 
@@ -1087,6 +1113,70 @@ def _get_artist_tags_listeners(artist):
         return [], [], 0
 
 _artist_styles_cache = {}
+_track_year_cache    = {}  # (norm_artist, norm_track) → year or None
+
+
+def _get_track_year_from_musicbrainz(artist, track):
+    """Return release year for a track from MusicBrainz, cached. None if not found."""
+    cache_key = (normalize(artist), normalize(track))
+    if cache_key in _track_year_cache:
+        return _track_year_cache[cache_key]
+    try:
+        data = _mb_get("recording/", {
+            "query": f'artist:"{artist}" AND recording:"{track}"',
+            "limit": 1,
+        })
+        recordings = data.get("recordings", [])
+        if recordings:
+            releases = recordings[0].get("releases", [])
+            if releases:
+                date_str = releases[0].get("date", "")
+                if date_str:
+                    year = int(date_str.split("-")[0])
+                    _track_year_cache[cache_key] = year
+                    log.info(f"MusicBrainz: {artist} - {track} → {year}")
+                    return year
+    except Exception as e:
+        log.error(f"MusicBrainz year lookup failed for {artist} - {track}: {e}")
+    _track_year_cache[cache_key] = None
+    return None
+
+
+def detect_main_decade(tracks):
+    """Return dominant decade (e.g. 1980) from list of track dicts with 'year' key, or None."""
+    years = [t.get("year") for t in tracks if t.get("year")]
+    if len(years) < 10:
+        log.info(f"Insufficient years for era detection: {len(years)} tracks")
+        return None
+    decades = [y // 10 * 10 for y in years]
+    main_decade, count = Counter(decades).most_common(1)[0]
+    log.info(f"Detected main decade: {main_decade}s ({count}/{len(years)} tracks)")
+    return main_decade
+
+
+def should_apply_temporal_filter(tracks):
+    """Return True if tracks are concentrated in ≤2 decades (niche/vintage genre)."""
+    years = [t.get("year") for t in tracks if t.get("year")]
+    if len(years) < 10:
+        return False
+    decades = set(y // 10 * 10 for y in years)
+    concentrated = len(decades) <= 2
+    log.info(f"Temporal concentration: {len(decades)} decades → {'APPLY FILTER' if concentrated else 'SKIP FILTER'}")
+    return concentrated
+
+
+def filter_by_detected_era(tracks):
+    """Filter tracks to main decade ±10 years if safe (keeps ≥50% of tracks)."""
+    main_decade = detect_main_decade(tracks)
+    if not main_decade:
+        return tracks
+    filtered = [t for t in tracks if t.get("year") and abs(t["year"] - main_decade) <= 10]
+    if len(filtered) < len(tracks) * 0.5:
+        log.warning(f"Temporal filter too aggressive ({len(filtered)}/{len(tracks)}), skipping")
+        return tracks
+    log.info(f"Temporal filter applied: {len(tracks)} → {len(filtered)} tracks")
+    return filtered
+
 
 def _get_artist_discogs_styles_light(artist):
     if artist in _artist_styles_cache:
@@ -2774,6 +2864,36 @@ def _render_map(message, artist_query, chat_id):
     if not sorted_styles:
         sorted_styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:12]
 
+    # Save filtered Discogs styles to tag_index (same blacklist as _discover_and_add_styles)
+    _RENDER_MAP_STYLE_BLACKLIST = {
+        "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
+        "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
+        "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
+        "Non-Music", "Brass & Military", "Folk, World, & Country",
+        "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
+        "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
+        "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
+        "Comedy", "Novelty", "Parody", "Education", "Radioplay",
+        "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
+        "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
+        "Experimental", "Ambient", "Noise",
+    }
+    tags_added = 0
+    for style, count in sorted_styles:
+        if len(style) <= 4:
+            continue
+        if style in _RENDER_MAP_STYLE_BLACKLIST:
+            continue
+        if "," in style or "&" in style:
+            continue
+        if any(w in style.lower() for w in ["music", "various", "compilation", "mix"]):
+            continue
+        tag_index[style] = tag_index.get(style, 0) + count
+        tags_added += 1
+    if tags_added:
+        save_tag_index()
+        log.info(f"Saved {tags_added} Discogs styles from artist card for '{artist_query}'")
+
     info = _get_artist_full_info(artist_query)
     if not info["genres"]:
         info["genres"] = [s for s, _ in sorted_styles[:4]]
@@ -3325,11 +3445,28 @@ def handle_buttons(update, context):
             _recent_artists.extend(artists_used)
             _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
 
+            # ── Dynamic Era Detection (All Time mode only) ────────────────────
+            if not decades and len(tracks) >= 10:
+                log.info("Fetching track years from MusicBrainz for temporal filtering...")
+                track_dicts = []
+                for t_str in tracks:
+                    parts = t_str.split(" - ", 1)
+                    if len(parts) == 2:
+                        year = _get_track_year_from_musicbrainz(parts[0], parts[1])
+                        track_dicts.append({"str": t_str, "year": year})
+                    else:
+                        track_dicts.append({"str": t_str, "year": None})
+                years_found = sum(1 for t in track_dicts if t.get("year"))
+                log.info(f"Years obtained for {years_found}/{len(track_dicts)} tracks")
+                if should_apply_temporal_filter(track_dicts):
+                    filtered_dicts = filter_by_detected_era(track_dicts)
+                    tracks = [t["str"] for t in filtered_dicts]
+
             # Track user genre profile silently
             _update_user_genre_profile(chat_id, style, decades)
 
             _cancel_working(sent, timer)
-            _discover_and_add_styles([track["artist"] for track in tracks])
+            _discover_and_add_styles(artists_used)
             era_tag2 = f" — {_decade_label_from_set(decades)}" if decades else " — ∞ All Time"
             send_playlist(message, tracks, title=f"🎸 {style.title()}{era_tag2}",
                           branded=False, chat_id=chat_id, size=GENRE_PLAYLIST_SIZE)
