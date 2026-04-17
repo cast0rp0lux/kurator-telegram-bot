@@ -21,10 +21,22 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.3)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.4)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.7.4": {
+        "date": "2026-04-17",
+        "changes": [
+            "Hasta 2 tracks por artista en géneros con pool pequeño (<40 artistas)",
+            "Playlists nicho obtienen más tracks sin repetir artistas mainstream"
+        ],
+        "technical": [
+            "select_tracks_with_decades: seen_artists → artist_track_count dict",
+            "MAX_PER_ARTIST = 2 si pool < 40, else 1",
+            "track_count = artist_track_count.get(artist_norm, 0); skip si >= MAX_PER_ARTIST"
+        ]
+    },
     "6.7.3": {
         "date": "2026-04-17",
         "changes": [
@@ -1990,11 +2002,12 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
         filtered_pool = final_pool
 
     random.shuffle(filtered_pool)
-    tracks       = []
-    keys_added   = set()
-    seen_artists = set()
-    artists_used = []
-    BATCH_SIZE   = 20  # submit in small batches, stop when target reached
+    tracks            = []
+    keys_added        = set()
+    artist_track_count = {}  # allows up to 2 tracks per artist when pool is small
+    artists_used      = []
+    BATCH_SIZE        = 20  # submit in small batches, stop when target reached
+    MAX_PER_ARTIST    = 2 if len(filtered_pool) < 40 else 1
 
     for i in range(0, min(len(filtered_pool), target * 4), BATCH_SIZE):
         if len(tracks) >= target:
@@ -2013,12 +2026,13 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
                     if result:
                         artist, track_name, key = result
                         artist_norm = normalize_artist(artist)
-                        if artist_norm in seen_artists:
+                        track_count = artist_track_count.get(artist_norm, 0)
+                        if track_count >= MAX_PER_ARTIST:
                             continue
                         if not track_in_history(key) and key not in keys_added:
                             tracks.append(f"{artist} - {track_name}")
                             keys_added.add(key)
-                            seen_artists.add(artist_norm)
+                            artist_track_count[artist_norm] = track_count + 1
                             artists_used.append(artist)
                 except Exception as e:
                     log.error(f"select_tracks_with_decades: {e}")
