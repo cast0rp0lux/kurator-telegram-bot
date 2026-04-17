@@ -21,7 +21,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.5)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
@@ -402,6 +402,24 @@ def save_tag_blacklist():
 def save_map_memory():
     _mongo_set("store", MAP_FILE, {str(k): v for k, v in map_memory.items()})
 
+def _migrate_tag_index_to_discogs():
+    global tag_index
+    if not tag_index:
+        return
+    if any(tag[0].isupper() for tag in tag_index.keys()):
+        log.info("tag_index already migrated to Discogs format")
+        return
+    log.info("Migrating tag_index to Discogs capitalization...")
+    migrated = {}
+    for tag, count in tag_index.items():
+        discogs_style = tag.strip().title()
+        migrated[discogs_style] = migrated.get(discogs_style, 0) + count
+    tag_index = migrated
+    save_tag_index()
+    log.info(f"Migrated {len(tag_index)} tags to Discogs format")
+
+_migrate_tag_index_to_discogs()
+
 # ─── URL helpers ──────────────────────────────────────────────────────────────
 
 def spotify_url(track):
@@ -533,20 +551,46 @@ def expand_artist_graph_rare(seed_artists):
 
 # ─── Similar artists (trail) ─────────────────────────────────────────────────
 
+def build_similar_artists_pool(artist):
+    """
+    Build artist pool from artist's tags via the genre system instead of
+    Last.fm similar chain, avoiding mainstream creep.
+    Returns: [artist] + filtered underground pool (max 150).
+    """
+    tags, _ = _get_artist_tags_listeners(artist)
+
+    if not tags or len(tags) < 2:
+        log.info(f"Insufficient tags for {artist}, falling back to Last.fm similar")
+        similar = _fetch_similar_names(artist)[:50]
+        return [artist] + similar
+
+    base_tags = [t for t, _ in tags[:3]]
+    log.info(f"Building pool for {artist} from tags: {base_tags}")
+
+    pool_genre = []
+    for tag in base_tags:
+        pool_genre += _get_era_artists_from_lastfm(tag, decades=None, max_artists=80)
+
+    similar = _fetch_similar_names(artist)[:10]
+
+    pool = list(set(pool_genre + similar))
+    pool = _filter_underground_artists(pool, genre=base_tags[0])
+    pool = [a for a in pool if normalize(a) != normalize(artist)]
+
+    final_pool = [artist] + pool[:150]
+    log.info(f"Built pool of {len(final_pool)} artists for {artist}")
+    return final_pool
+
+
 def _expand_trail(artist, hops):
-    level1 = set(s["name"] for s in
-                 lastfm("artist.getsimilar", artist=artist, limit=60)
-                 .get("similarartists", {}).get("artist", []))
+    """
+    Build trail using genre-based pool instead of multi-hop Last.fm similar chain.
+    Avoids mainstream creep by routing through underground filter.
+    """
+    pool = build_similar_artists_pool(artist)
     if hops == 1:
-        return list(level1)
-    level2 = set()
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        for f in as_completed([ex.submit(_fetch_similar_names, a)
-                               for a in random.sample(list(level1), min(len(level1), 20))]):
-            try: level2.update(f.result())
-            except: pass
-    level2 -= level1 | {artist}
-    return list(level1 | level2)
+        return pool[:60]
+    return pool
 
 # ─── Track selection ──────────────────────────────────────────────────────────
 
@@ -961,18 +1005,16 @@ def _resolve_genre_styles(genre, decades):
     If not mapped, uses the genre name directly as a Discogs style — works for
     most specific genres like 'Hard Techno', 'Cumbia', 'Drone Metal', etc.
     """
-    genre_map = GENRE_TO_DISCOGS_STYLES.get(genre.lower().strip(), {})
+    genre_clean = genre.strip()
+    genre_lower = genre_clean.lower()
+    genre_map = GENRE_TO_DISCOGS_STYLES.get(genre_lower, {})
     if genre_map:
         styles = []
         for d in decades:
             styles.extend(genre_map.get(d, []))
-        # Deduplicate preserving order
         seen = set()
         return [s for s in styles if not (s in seen or seen.add(s))]
-    else:
-        # Not mapped — use genre literal as Discogs style
-        # Capitalize properly: "hard techno" → "Hard Techno"
-        return [genre.strip().title()]
+    return [genre_clean.title()]
 
 
 GENRE_INCOMPATIBLE = {
@@ -1069,6 +1111,130 @@ def _get_artist_tags_listeners(artist):
         return tags_normalized, tags_compact, listeners
     except Exception:
         return [], [], 0
+
+_artist_styles_cache = {}
+_track_year_cache    = {}  # (norm_artist, norm_track) → year or None
+
+
+def _get_track_year_from_musicbrainz(artist, track):
+    """Return release year for a track from MusicBrainz, cached. None if not found."""
+    cache_key = (normalize(artist), normalize(track))
+    if cache_key in _track_year_cache:
+        return _track_year_cache[cache_key]
+    try:
+        data = _mb_get("recording/", {
+            "query": f'artist:"{artist}" AND recording:"{track}"',
+            "limit": 1,
+        })
+        recordings = data.get("recordings", [])
+        if recordings:
+            releases = recordings[0].get("releases", [])
+            if releases:
+                date_str = releases[0].get("date", "")
+                if date_str:
+                    year = int(date_str.split("-")[0])
+                    _track_year_cache[cache_key] = year
+                    log.info(f"MusicBrainz: {artist} - {track} → {year}")
+                    return year
+    except Exception as e:
+        log.error(f"MusicBrainz year lookup failed for {artist} - {track}: {e}")
+    _track_year_cache[cache_key] = None
+    return None
+
+
+def detect_main_decade(tracks):
+    """Return dominant decade (e.g. 1980) from list of track dicts with 'year' key, or None."""
+    years = [t.get("year") for t in tracks if t.get("year")]
+    if len(years) < 10:
+        log.info(f"Insufficient years for era detection: {len(years)} tracks")
+        return None
+    decades = [y // 10 * 10 for y in years]
+    main_decade, count = Counter(decades).most_common(1)[0]
+    log.info(f"Detected main decade: {main_decade}s ({count}/{len(years)} tracks)")
+    return main_decade
+
+
+def should_apply_temporal_filter(tracks):
+    """Return True if tracks are concentrated in ≤2 decades (niche/vintage genre)."""
+    years = [t.get("year") for t in tracks if t.get("year")]
+    if len(years) < 10:
+        return False
+    decades = set(y // 10 * 10 for y in years)
+    concentrated = len(decades) <= 2
+    log.info(f"Temporal concentration: {len(decades)} decades → {'APPLY FILTER' if concentrated else 'SKIP FILTER'}")
+    return concentrated
+
+
+def filter_by_detected_era(tracks):
+    """Filter tracks to main decade ±10 years if safe (keeps ≥50% of tracks)."""
+    main_decade = detect_main_decade(tracks)
+    if not main_decade:
+        return tracks
+    filtered = [t for t in tracks if t.get("year") and abs(t["year"] - main_decade) <= 10]
+    if len(filtered) < len(tracks) * 0.5:
+        log.warning(f"Temporal filter too aggressive ({len(filtered)}/{len(tracks)}), skipping")
+        return tracks
+    log.info(f"Temporal filter applied: {len(tracks)} → {len(filtered)} tracks")
+    return filtered
+
+
+def _get_artist_discogs_styles_light(artist):
+    if artist in _artist_styles_cache:
+        return _artist_styles_cache[artist]
+    try:
+        r = requests.get("https://api.discogs.com/database/search",
+                         params={"q": artist, "type": "artist", "per_page": 1,
+                                 "token": DISCOGS_TOKEN},
+                         timeout=5).json()
+        styles = []
+        if r.get("results"):
+            result = r["results"][0]
+            styles = result.get("style", [])
+            if not styles:
+                genre = result.get("genre", [])
+                styles = genre if isinstance(genre, list) else [genre] if genre else []
+        _artist_styles_cache[artist] = styles
+        return styles
+    except Exception as e:
+        log.error(f"Discogs style discovery for {artist}: {e}")
+        return []
+
+def _discover_and_add_styles(artists):
+    global tag_index
+    STYLE_BLACKLIST = {
+        "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
+        "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
+        "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
+        "Non-Music", "Brass & Military", "Folk, World, & Country",
+        "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
+        "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
+        "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
+        "Comedy", "Novelty", "Parody", "Education", "Radioplay",
+        "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
+        "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
+        "Experimental", "Ambient", "Noise",
+    }
+    sample = artists[:min(10, len(artists))]
+    new_styles_added = 0
+    for artist in sample:
+        styles = _get_artist_discogs_styles_light(artist)
+        for style in styles:
+            if len(style) <= 4:
+                continue
+            if style in STYLE_BLACKLIST:
+                continue
+            if "," in style or "&" in style:
+                continue
+            if any(word in style.lower() for word in ["music", "various", "compilation", "mix"]):
+                continue
+            if style not in tag_index:
+                tag_index[style] = 1
+                new_styles_added += 1
+            else:
+                tag_index[style] = tag_index.get(style, 0) + 1
+    if new_styles_added > 0:
+        save_tag_index()
+        log.info(f"Auto-discovered {new_styles_added} new styles filtered")
 
 def _artist_matches_genre(artist, valid_genres):
     """Return True if artist tags don't contain incompatible genres."""
@@ -2291,13 +2457,6 @@ def _get_artist_full_info(artist_query):
         if end:   info["end_year"]   = end[:4]
         tags = sorted(mb.get("tags", []), key=lambda t: t.get("count", 0), reverse=True)
         info["genres"] = [t["name"].title() for t in tags[:4]]
-        # Add MusicBrainz tags to tag index — skip blacklisted tags
-        for t in tags[:8]:
-            tag_name = t["name"].title()
-            if not _is_valid_tag(tag_name):
-                continue
-            tag_index[tag_name] = tag_index.get(tag_name, 0) + t.get("count", 1)
-        save_tag_index()
         info["albums"] = _mb_studio_albums(mbid)
 
     # ── Discogs — label extraction ────────────────────────────────────────────
@@ -2314,13 +2473,6 @@ def _get_artist_full_info(artist_query):
             for lbl in rel.get("label", []):
                 if lbl and lbl.lower() not in ("not on label", "unknown", "self-released"):
                     label_counter[lbl] = label_counter.get(lbl, 0) + 1
-            for s in rel.get("style", []):
-                if _is_valid_tag(s):
-                    tag_index[s] = tag_index.get(s, 0) + 1
-            for g in rel.get("genre", []):
-                if _is_valid_tag(g):
-                    tag_index[g] = tag_index.get(g, 0) + 1
-        save_tag_index()
         if label_counter:
             info["label"] = max(label_counter, key=label_counter.get)
     except Exception as e:
@@ -2712,6 +2864,36 @@ def _render_map(message, artist_query, chat_id):
     if not sorted_styles:
         sorted_styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:12]
 
+    # Save filtered Discogs styles to tag_index (same blacklist as _discover_and_add_styles)
+    _RENDER_MAP_STYLE_BLACKLIST = {
+        "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
+        "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
+        "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
+        "Non-Music", "Brass & Military", "Folk, World, & Country",
+        "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
+        "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
+        "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
+        "Comedy", "Novelty", "Parody", "Education", "Radioplay",
+        "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
+        "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
+        "Experimental", "Ambient", "Noise",
+    }
+    tags_added = 0
+    for style, count in sorted_styles:
+        if len(style) <= 4:
+            continue
+        if style in _RENDER_MAP_STYLE_BLACKLIST:
+            continue
+        if "," in style or "&" in style:
+            continue
+        if any(w in style.lower() for w in ["music", "various", "compilation", "mix"]):
+            continue
+        tag_index[style] = tag_index.get(style, 0) + count
+        tags_added += 1
+    if tags_added:
+        save_tag_index()
+        log.info(f"Saved {tags_added} Discogs styles from artist card for '{artist_query}'")
+
     info = _get_artist_full_info(artist_query)
     if not info["genres"]:
         info["genres"] = [s for s, _ in sorted_styles[:4]]
@@ -2836,11 +3018,12 @@ def _build_tags_buttons(sorted_tags, page, edit_mode=False, chat_id=None):
                 f"🔄 Restore {len(tag_blacklist)} hidden tag(s)",
                 callback_data="tags_restore_open"
             )])
+        buttons.append([InlineKeyboardButton("🗑️ Reset all tags", callback_data="tag_reset_confirm")])
         buttons.append([InlineKeyboardButton("✅ Done", callback_data=f"tags_page|{page}")])
     else:
         row = []
         for tag, count in page_tags:
-            row.append(InlineKeyboardButton(f"{tag.title()} ({count})", callback_data=safe_callback(f"map_style|{tag}")))
+            row.append(InlineKeyboardButton(f"{tag.title()} ({count})", callback_data=safe_callback(f"tag_style|{tag}")))
             if len(row) == 2:
                 buttons.append(row)
                 row = []
@@ -2890,7 +3073,12 @@ def _build_restore_buttons(chat_id, page=0):
 
 def _render_tags(message, page=0, edit_mode=False, chat_id=None):
     if not tag_index:
-        message.reply_text("No tags collected yet.\n\nUse /map <artist> to start building your library.")
+        message.reply_text(
+            "No tags collected yet.\n\n"
+            "Tags build up automatically as you use Kurator.\n\n"
+            "— /artist <name> — explore an artist and collect their genres\n"
+            "— /genre — play a genre playlist"
+        )
         return
     all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
     sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
@@ -3180,19 +3368,20 @@ def handle_buttons(update, context):
                 max(DECADE_YEARS[d][1] for d in decades)
             ) if decades else None
 
-            pool = _mb_get_artists_by_genre(style, decades, limit=200)
+            discogs_styles = _resolve_genre_styles(style, decades)
+            pool = _get_era_artists_from_discogs(decades, mode="playlist",
+                                                  max_artists=100,
+                                                  style_override=discogs_styles)
 
-            # Fallback to Last.fm seeds if MB tag returns nothing
+            # Fallback to Last.fm seeds if Discogs returns nothing
             if not pool:
-                log.info(f"[Oracle-POC] No results for '{style}' — falling back to Last.fm seeds")
+                log.info(f"[Oracle-POC] Discogs empty for '{style}' — falling back to Last.fm")
                 pool = _get_era_artists_from_lastfm(style, decades, max_artists=150)
 
-            # Fallback to Discogs if both empty
+            # Fallback to MusicBrainz if both empty
             if not pool:
-                log.info(f"[Oracle-POC] Last.fm empty — falling back to Discogs")
-                pool = _get_era_artists_from_discogs(decades, mode="playlist",
-                                                      max_artists=100,
-                                                      style_override=_resolve_genre_styles(style, decades))
+                log.info(f"[Oracle-POC] Last.fm empty — falling back to MusicBrainz")
+                pool = _mb_get_artists_by_genre(style, decades, limit=200)
 
             if _is_cancelled(chat_id):
                 _cancel_working(sent, timer)
@@ -3256,10 +3445,28 @@ def handle_buttons(update, context):
             _recent_artists.extend(artists_used)
             _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
 
+            # ── Dynamic Era Detection (All Time mode only) ────────────────────
+            if not decades and len(tracks) >= 10:
+                log.info("Fetching track years from MusicBrainz for temporal filtering...")
+                track_dicts = []
+                for t_str in tracks:
+                    parts = t_str.split(" - ", 1)
+                    if len(parts) == 2:
+                        year = _get_track_year_from_musicbrainz(parts[0], parts[1])
+                        track_dicts.append({"str": t_str, "year": year})
+                    else:
+                        track_dicts.append({"str": t_str, "year": None})
+                years_found = sum(1 for t in track_dicts if t.get("year"))
+                log.info(f"Years obtained for {years_found}/{len(track_dicts)} tracks")
+                if should_apply_temporal_filter(track_dicts):
+                    filtered_dicts = filter_by_detected_era(track_dicts)
+                    tracks = [t["str"] for t in filtered_dicts]
+
             # Track user genre profile silently
             _update_user_genre_profile(chat_id, style, decades)
 
             _cancel_working(sent, timer)
+            _discover_and_add_styles(artists_used)
             era_tag2 = f" — {_decade_label_from_set(decades)}" if decades else " — ∞ All Time"
             send_playlist(message, tracks, title=f"🎸 {style.title()}{era_tag2}",
                           branded=False, chat_id=chat_id, size=GENRE_PLAYLIST_SIZE)
@@ -3553,6 +3760,10 @@ def handle_buttons(update, context):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
+    # ── tag_style: genre era prompt launched from /tags view ──────────────────
+    elif action == "tag_style":
+        _genre_era_prompt(query.edit_message_text, chat_id, value, "tags_page|0")
+
     # ── map_style ─────────────────────────────────────────────────────────────
     elif action == "map_style":
         mem          = map_memory.get(chat_id, {})
@@ -3667,7 +3878,7 @@ def handle_buttons(update, context):
         all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         if not sorted_tags:
-            query.edit_message_text("Tag collection is empty.\n\nUse /map <artist> to build it up.",
+            query.edit_message_text("Tag collection is empty.\n\nUse /artist <name> to explore an artist and start collecting genres.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]]))
             return
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
@@ -3732,12 +3943,45 @@ def handle_buttons(update, context):
         to_restore = _pending_tag_restores.pop(chat_id, set())
         for tag in to_restore:
             tag_blacklist.discard(tag.lower())
-            if tag.lower() not in tag_index:
-                tag_index[tag.lower()] = 1
+            tag_discogs = tag.strip().title()
+            if tag_discogs not in tag_index:
+                tag_index[tag_discogs] = 1
         if to_restore:
             save_tag_index()
             save_tag_blacklist()
         _render_tags(message, page=0, chat_id=chat_id)
+
+    # ── tag_reset_confirm: show full-reset warning ────────────────────────────
+    elif action == "tag_reset_confirm":
+        visible_count = len([t for t in tag_index if _is_valid_tag(t)])
+        hidden_count  = len(tag_blacklist)
+        query.edit_message_text(
+            "⚠️ Reset all tags?\n\n"
+            f"This will permanently delete:\n"
+            f"• {visible_count} visible tag(s)\n"
+            f"• {hidden_count} hidden tag(s)\n\n"
+            "Your entire tag collection will be wiped.\n"
+            "New tags will accumulate again as you use Kurator.\n\n"
+            "This cannot be undone.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes, reset all tags", callback_data="tag_reset_exec")],
+                [InlineKeyboardButton("← Cancel",              callback_data="tags_edit|0")],
+            ])
+        )
+
+    elif action == "tag_reset_exec":
+        tag_index.clear()
+        tag_blacklist.clear()
+        _pending_tag_deletes.pop(chat_id, None)
+        _pending_tag_restores.pop(chat_id, None)
+        save_tag_index()
+        save_tag_blacklist()
+        query.edit_message_text(
+            "🗑️ Tags reset.\n\nAll visible and hidden tags removed.\n\nNew tags will build up as you use Kurator.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")],
+            ])
+        )
 
     # ── soundiiz_help ─────────────────────────────────────────────────────────
     elif action == "soundiiz_help":
