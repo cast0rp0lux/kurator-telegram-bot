@@ -21,7 +21,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.2)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.3)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
@@ -1582,13 +1582,18 @@ def _get_era_artists_from_discogs(decades, mode="playlist", max_artists=80, styl
     if style_override:
         styles = list(style_override)
     else:
+        if not decades:
+            return []
         styles = []
         for d in decades:
             styles.extend(DECADE_STYLES.get(d, []))
     random.shuffle(styles)
 
-    year_lo = min(DECADE_YEARS[d][0] for d in decades)
-    year_hi = max(DECADE_YEARS[d][1] for d in decades)
+    if not decades:
+        year_lo, year_hi = 1950, 2025
+    else:
+        year_lo = min(DECADE_YEARS[d][0] for d in decades)
+        year_hi = max(DECADE_YEARS[d][1] for d in decades)
     all_years = list(range(year_lo, year_hi + 1))
 
     tasks = []
@@ -3801,11 +3806,24 @@ def handle_buttons(update, context):
         styles       = mem.get("styles", [])
         info         = mem.get("info", {})
         if not artist or not styles:
-            query.edit_message_text(f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.", parse_mode="HTML", reply_markup=main_menu_markup())
+            query.edit_message_reply_markup(reply_markup=None)
+            message.reply_text(f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.", parse_mode="HTML", reply_markup=main_menu_markup())
             return
+        # Remove "Back to artist" button from playlist, then send artist card as new message
+        try:
+            stored_key = None
+            for k, v in _track_store.items():
+                if isinstance(v, dict) and v.get("map_chat_id") == chat_id:
+                    stored_key = k
+            if stored_key:
+                query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(_export_collapsed_buttons(stored_key))
+                )
+        except Exception:
+            pass
         card_text = _format_artist_card(artist, info)
         buttons   = _build_map_buttons(display_name, styles, info, chat_id)
-        query.edit_message_text(f"{card_text}\n\nExplore:", reply_markup=InlineKeyboardMarkup(buttons))
+        message.reply_text(f"{card_text}\n\nExplore:", reply_markup=InlineKeyboardMarkup(buttons))
 
     # ── tags ──────────────────────────────────────────────────────────────────
     elif action == "tags_page":
