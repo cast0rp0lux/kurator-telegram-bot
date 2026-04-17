@@ -21,10 +21,25 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.4)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.7.5)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.7.5": {
+        "date": "2026-04-17",
+        "changes": [
+            "Similar Artists: nuevo diseño — tags del artista, cuenta de artistas, botón GENERATE PLAYLIST",
+            "Similar Artists: eliminados botones '1 hop / 2 hops' de la vista de lista",
+            "/changelog: solo visible para admin",
+            "2 tracks por artista siempre (no condicional a tamaño de pool)"
+        ],
+        "technical": [
+            "_render_similar: tags_str + total_artists en texto, botón similar_generate, sin trail_go buttons",
+            "similar_generate handler: build_similar_artists_pool + select_tracks + send_playlist",
+            "changelog_command: guard if chat_id != ADMIN_CHAT_ID → return",
+            "select_tracks_with_decades: MAX_PER_ARTIST removido, hardcoded >= 2"
+        ]
+    },
     "6.7.4": {
         "date": "2026-04-17",
         "changes": [
@@ -2002,12 +2017,11 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
         filtered_pool = final_pool
 
     random.shuffle(filtered_pool)
-    tracks            = []
-    keys_added        = set()
-    artist_track_count = {}  # allows up to 2 tracks per artist when pool is small
-    artists_used      = []
-    BATCH_SIZE        = 20  # submit in small batches, stop when target reached
-    MAX_PER_ARTIST    = 2 if len(filtered_pool) < 40 else 1
+    tracks             = []
+    keys_added         = set()
+    artist_track_count = {}  # up to 2 tracks per artist — fills thin pools
+    artists_used       = []
+    BATCH_SIZE         = 20  # submit in small batches, stop when target reached
 
     for i in range(0, min(len(filtered_pool), target * 4), BATCH_SIZE):
         if len(tracks) >= target:
@@ -2027,7 +2041,7 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
                         artist, track_name, key = result
                         artist_norm = normalize_artist(artist)
                         track_count = artist_track_count.get(artist_norm, 0)
-                        if track_count >= MAX_PER_ARTIST:
+                        if track_count >= 2:
                             continue
                         if not track_in_history(key) and key not in keys_added:
                             tracks.append(f"{artist} - {track_name}")
@@ -2106,16 +2120,18 @@ def _show_era_choice(query, chat_id, title, gen_action, back_cb):
 # ─── Working message — appears at 8s if still generating ─────────────────────
 
 def _render_similar(query, artist, similar, page, chat_id):
-    """Render paginated similar artists with 2-column layout."""
+    """Render paginated similar artists with tags context and generate button."""
     PAGE_SIZE   = 8
     total_pages = max(1, (len(similar) - 1) // PAGE_SIZE + 1)
     start       = page * PAGE_SIZE
     page_items  = sorted(similar[start:start + PAGE_SIZE], key=lambda x: len(x))
 
-    buttons = [
-        [InlineKeyboardButton("🔗 1 hop — Direct neighbours",  callback_data=safe_callback(f"trail_go|1|{artist}"))],
-        [InlineKeyboardButton("🔗 2 hops — Wider connections", callback_data=safe_callback(f"trail_go|2|{artist}"))],
-    ]
+    tags, _, listeners = _get_artist_tags_listeners(artist)
+    top_tags  = tags[:3] if tags else []
+    tags_str  = " · ".join(top_tags) if top_tags else "Various styles"
+    total_artists = len(similar)
+
+    buttons = []
 
     i = 0
     while i < len(page_items):
@@ -2138,13 +2154,14 @@ def _render_similar(query, artist, similar, page, chat_id):
     if nav:
         buttons.append(nav)
 
+    buttons.append([InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data=safe_callback(f"similar_generate|{artist}"))])
     buttons.append([InlineKeyboardButton(f"← Back to {artist[:20]}", callback_data=f"card_back|{chat_id}")])
 
     page_label = f" (page {page+1}/{total_pages})" if total_pages > 1 else ""
-    query.edit_message_text(
-        f"🔗 Similar Artists — {artist}{page_label}",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    text  = f"🔗 Similar to {artist}\n"
+    text += f"🏷️ {tags_str}\n\n"
+    text += f"{total_artists} artists from the same scene{page_label}"
+    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 # ─── Working message — appears at 8s if still generating ─────────────────────
 
@@ -2778,6 +2795,9 @@ def help_command(update, context):
 def changelog_command(update, context):
     """Show development changelog, newest versions first, split if needed."""
     import html as _html
+
+    if update.message.chat_id != ADMIN_CHAT_ID:
+        return
 
     sorted_versions = sorted(CHANGELOG.keys(), key=lambda x: float(x), reverse=True)
 
@@ -3819,6 +3839,17 @@ def handle_buttons(update, context):
         _cancel_working(sent, timer)
         send_playlist(message, result,
                       title=f"🔗 {artist} — {hop_labels.get(hops, '')}",
+                      branded=False, chat_id=chat_id, map_chat_id=chat_id)
+
+    # ── similar_generate ──────────────────────────────────────────────────────
+    elif action == "similar_generate":
+        artist = value
+        query.edit_message_text(f"🎵 Generating playlist from {artist}'s scene…")
+        sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
+        names  = build_similar_artists_pool(artist)
+        result = select_tracks(names, skip_recent=False)
+        _cancel_working(sent, timer)
+        send_playlist(message, result, title=f"🔗 {artist} — Similar artists",
                       branded=False, chat_id=chat_id, map_chat_id=chat_id)
 
     # ── map_styles: paginated styles view ────────────────────────────────────
