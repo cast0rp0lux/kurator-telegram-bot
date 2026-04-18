@@ -21,10 +21,22 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.4)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.5)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.8.5": {
+        "date": "2026-04-18",
+        "changes": [
+            "Soundiiz: botón URL '→ soundiiz.com' abre navegador directamente",
+            "Soundiiz: instrucciones simplificadas a 5 pasos concisos",
+            "/cancel: símbolo ■ en vez de ⏹"
+        ],
+        "technical": [
+            "soundiiz_help: msg.edit_reply_markup añade InlineKeyboardButton(url='https://soundiiz.com')",
+            "cancel_command: '⏹ Generation stopped.' → '■ Generation stopped.'"
+        ]
+    },
     "6.8.4": {
         "date": "2026-04-18",
         "changes": [
@@ -3124,7 +3136,7 @@ def cancel_command(update, context):
     _clear_progress_msgs(chat_id)
     _pending_gen.pop(chat_id, None)
     _pending_decades.pop(chat_id, None)
-    msg = "⏹ Generation stopped." if was_generating else "Nothing in progress."
+    msg = "■ Generation stopped." if was_generating else "Nothing in progress."
     update.message.reply_text(msg, reply_markup=main_menu_markup())
 
 # ─── Map renderer ─────────────────────────────────────────────────────────────
@@ -4345,16 +4357,16 @@ def handle_buttons(update, context):
         # Send Soundiiz instructions as a new reply — playlist stays visible above
         msg = message.reply_text(
             "📡 Export your playlist\n\n"
-            "1. Go to Soundiiz — log in or create a free account\n\n"
-            "2. Tap ··· top right — select \"Import playlist\"\n\n"
-            "3. Select \"From plain text\"\n\n"
-            "4. Paste your playlist — tap \"Send text\"\n\n"
-            "5. Choose your platform: Spotify, Qobuz, Apple Music and more\n\n"
-            "↗ soundiiz.com",
+            "1. Copy the playlist text above\n"
+            "2. Open Soundiiz — log in or sign up\n"
+            "3. Import playlist → From plain text\n"
+            "4. Paste → Send text\n"
+            "5. Choose your platform",
             disable_web_page_preview=True,
         )
         msg.edit_reply_markup(
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("→ soundiiz.com", url="https://soundiiz.com")],
                 [InlineKeyboardButton("✕ Close", callback_data=f"delete_msg|{msg.message_id}")],
             ])
         )
