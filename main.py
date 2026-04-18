@@ -2987,7 +2987,11 @@ def changelog_command(update, context):
     """Show development changelog, newest versions first, split if needed."""
     import html as _html
 
-    sorted_versions = sorted(CHANGELOG.keys(), key=lambda x: float(x), reverse=True)
+    sorted_versions = sorted(
+        CHANGELOG.keys(),
+        key=lambda x: tuple(int(p) for p in x.split(".")),
+        reverse=True
+    )
 
     chunks   = []
     current  = "📀 <b>Kurator Development Log</b>\n\n"
