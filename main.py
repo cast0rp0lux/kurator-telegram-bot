@@ -3199,6 +3199,10 @@ def map_command(update, context):
     _render_map(msg, artist_query, chat_id)
     _cancel_working(sent, timer)
     _pending_map_msgs.pop(chat_id, None)
+    try:
+        mapping_msg.delete()
+    except Exception:
+        pass
 
 def tags(update, context):
     _render_tags(update.message, page=0)
@@ -4111,8 +4115,12 @@ def handle_buttons(update, context):
         _nav_history[chat_id] = _nav_history[chat_id][-10:]
 
         # Just send new card — don't touch the current message
-        message.reply_text(f"🧑‍🎤 Exploring {new_artist.upper()}…")
+        _exp_msg = message.reply_text(f"🧑‍🎤 Exploring {new_artist.upper()}…")
         _render_map(message, new_artist, chat_id)
+        try:
+            _exp_msg.delete()
+        except Exception:
+            pass
 
     # ── trail_go ──────────────────────────────────────────────────────────────
     elif action == "trail_go":
@@ -4238,8 +4246,12 @@ def handle_buttons(update, context):
         if history_stack:
             prev_artist = history_stack.pop()
             _nav_history[chat_id] = history_stack
-            message.reply_text(f"🧑‍🎤 Exploring {prev_artist.upper()}…")
+            _exp_msg = message.reply_text(f"🧑‍🎤 Exploring {prev_artist.upper()}…")
             _render_map(message, prev_artist, chat_id)
+            try:
+                _exp_msg.delete()
+            except Exception:
+                pass
             return
 
         mem          = map_memory.get(chat_id, {})
@@ -4603,6 +4615,10 @@ def handle_text_reply(update, context):
         _render_map(msg, text, chat_id)
         _cancel_working(sent, timer)
         _pending_map_msgs.pop(chat_id, None)
+        try:
+            mapping_msg.delete()
+        except Exception:
+            pass
 
     elif action == "awaiting_genre":
         _pending_gen.pop(chat_id, None)
