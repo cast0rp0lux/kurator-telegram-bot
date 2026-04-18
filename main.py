@@ -4219,7 +4219,7 @@ def handle_buttons(update, context):
     # ── similar_generate ──────────────────────────────────────────────────────
     elif action == "similar_generate":
         artist = value
-        query.edit_message_text(f"🎵 Generating playlist from {artist}'s scene…")
+        _edit_card_message(query, chat_id, f"🔗 Generating playlist from {artist}'s scene…", None)
         sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
         # Use the raw Last.fm similar list already stored in map_memory (unfiltered)
         stored = map_memory.get(chat_id, {}).get("similar", [])
