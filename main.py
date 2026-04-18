@@ -21,10 +21,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.5)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.0)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.0": {
+        "date": "2026-04-18",
+        "changes": [
+            "Artist card muestra foto de Last.fm como imagen principal",
+            "Navegación (Similar, Styles, Bio, Albums, Back) adaptada a mensajes foto",
+        ],
+        "technical": [
+            "_get_artist_image(artist): Last.fm extralarge/large, filtra placeholder",
+            "_edit_card_message(query, chat_id, text, markup): caption si has_photo, text si no",
+            "_render_map: reply_photo cuando hay imagen, fallback a reply_text",
+            "map_bio/map_albums/map_similar/map_styles/card_back/_render_similar → _edit_card_message",
+        ]
+    },
     "6.8.5": {
         "date": "2026-04-18",
         "changes": [
@@ -1480,6 +1493,37 @@ def _get_artist_primary_tags(artist):
     return lastfm_display[:3]
 
 
+_artist_image_cache = {}
+
+def _get_artist_image(artist):
+    """Return Last.fm artist image URL (extralarge/large), or None if unavailable."""
+    if artist in _artist_image_cache:
+        return _artist_image_cache[artist]
+    _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f.png"
+    try:
+        data = lastfm("artist.getinfo", artist=artist)
+        images = data.get("artist", {}).get("image", [])
+        for size in ("extralarge", "large", "medium"):
+            for img in images:
+                if img.get("size") == size:
+                    url = img.get("#text", "")
+                    if url and _PLACEHOLDER not in url:
+                        _artist_image_cache[artist] = url
+                        return url
+    except Exception as e:
+        log.error(f"Last.fm image for {artist}: {e}")
+    _artist_image_cache[artist] = None
+    return None
+
+
+def _edit_card_message(query, chat_id, text, markup):
+    """Edit a card message: caption edit for photo cards, text edit otherwise."""
+    if map_memory.get(chat_id, {}).get("has_photo"):
+        query.edit_message_caption(caption=text, reply_markup=markup)
+    else:
+        query.edit_message_text(text, reply_markup=markup)
+
+
 def _discover_and_add_styles(artists):
     global tag_index
     STYLE_BLACKLIST = {
@@ -2346,7 +2390,7 @@ def _render_similar(query, artist, similar, page, chat_id):
     text  = f"🔗 Similar to {artist}\n"
     text += f"🏷️ {tags_str}\n\n"
     text += f"{total_artists} artists from the same scene{page_label}"
-    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    _edit_card_message(query, chat_id, text, InlineKeyboardMarkup(buttons))
 
 # ─── Working message — appears at 8s if still generating ─────────────────────
 
@@ -3211,17 +3255,33 @@ def _render_map(message, artist_query, chat_id):
         pass  # keep empty — card will just show no genre line
 
     display_name = _artist_display_name(info, artist_query)
+    photo_url    = _get_artist_image(artist_query)
+    has_photo    = bool(photo_url)
 
     map_memory[chat_id] = {
         "artist":       artist_query,
         "display_name": display_name,
         "styles":       sorted_styles,
         "info":         info,
+        "has_photo":    has_photo,
     }
     save_map_memory()
 
     card_text = _format_artist_card(artist_query, info)
     buttons   = _build_map_buttons(display_name, sorted_styles, info, chat_id)
+
+    if has_photo:
+        try:
+            message.reply_photo(
+                photo=photo_url,
+                caption=f"{card_text}\n\nExplore:",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+            return
+        except Exception as e:
+            log.warning(f"[Card] reply_photo failed for {artist_query}: {e}")
+            map_memory[chat_id]["has_photo"] = False
+            save_map_memory()
 
     message.reply_text(
         f"{card_text}\n\nExplore:",
@@ -3906,9 +3966,10 @@ def handle_buttons(update, context):
         bio          = info.get("bio", "No bio available.")
         lfm          = info.get("lastfm_url", "")
         link         = f"\n\n↗ Full profile\n{lfm}" if lfm else ""
-        query.edit_message_text(
+        _edit_card_message(
+            query, chat_id,
             f"{display_name}\n\n{bio}{link}",
-            reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardMarkup([[
                 InlineKeyboardButton(f"← Back to {display_name[:20]}", callback_data=f"map_back|{chat_id}")
             ]])
         )
@@ -3932,9 +3993,10 @@ def handle_buttons(update, context):
                 callback_data=safe_callback(f"album_select|{chat_id}|{album['title'][:20]}")
             )])
         buttons.append([InlineKeyboardButton(f"← Back to {display_name[:20]}", callback_data=f"card_back|{chat_id}")])
-        query.edit_message_text(
+        _edit_card_message(
+            query, chat_id,
             f"{display_name} — Studio Albums",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            InlineKeyboardMarkup(buttons)
         )
 
     # ── album_select ──────────────────────────────────────────────────────────
@@ -3980,7 +4042,7 @@ def handle_buttons(update, context):
     # ── map_similar ───────────────────────────────────────────────────────────
     elif action == "map_similar":
         artist = value
-        query.edit_message_text(f"🔗 Fetching similar artists for {artist}…")
+        _edit_card_message(query, chat_id, f"🔗 Fetching similar artists for {artist}…", None)
         similar = [s["name"] for s in
                    lastfm("artist.getsimilar", artist=artist, limit=60)
                    .get("similarartists", {}).get("artist", [])]
@@ -4102,9 +4164,10 @@ def handle_buttons(update, context):
             buttons.append(nav)
         buttons.append([InlineKeyboardButton(f"← Back to {display_name[:20]}", callback_data=f"card_back|{chat_id}")])
         page_label = f" (page {page+1}/{total_pages})" if total_pages > 1 else ""
-        query.edit_message_text(
+        _edit_card_message(
+            query, chat_id,
             f"🏷️ {display_name} — Styles{page_label}",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            InlineKeyboardMarkup(buttons)
         )
 
     # ── tag_style: genre era prompt launched from /tags view ──────────────────
@@ -4131,7 +4194,7 @@ def handle_buttons(update, context):
             return
         card_text = _format_artist_card(artist, info)
         buttons   = _build_map_buttons(display_name, styles, info, chat_id)
-        query.edit_message_text(f"{card_text}\n\nExplore:", reply_markup=InlineKeyboardMarkup(buttons))
+        _edit_card_message(query, chat_id, f"{card_text}\n\nExplore:", InlineKeyboardMarkup(buttons))
 
     elif action == "map_back":
         history_stack = _nav_history.get(chat_id, [])
