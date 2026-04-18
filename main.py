@@ -21,10 +21,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.3)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.4)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.8.4": {
+        "date": "2026-04-18",
+        "changes": [
+            "Sistema de scoring MVP (3 capas) para filtrar contaminación moderna en géneros históricos",
+            "Reemplaza temporal concentration logic: scoring aplica a TODO el rango temporal",
+            "Tracks 2010+ cerca del cluster pasan (score 70); tracks 2010+ lejos del cluster fallan (score 30)"
+        ],
+        "technical": [
+            "Constante SCORE_THRESHOLD = 50",
+            "_calculate_track_score(track, year, median, genre): base 60 + temporal 0-40 - penalty 30 si ≥2010",
+            "All Time handler: calcula pool_median_year, aplica _calculate_track_score a cada track",
+            "Sin año → score 80 (benefit of doubt, pasa); lejos+moderno → score 30 (falla)"
+        ]
+    },
     "6.8.3": {
         "date": "2026-04-18",
         "changes": [
@@ -388,6 +402,7 @@ RARE_MAX_LISTENERS             = 500_000
 SINGLES_FALLBACK_LISTENER_CAP  = 1_000_000  # only artists below this get the singles/EPs fallback
 RARE_CANDIDATE_CAP  = 150
 TAGS_PAGE_SIZE      = 10
+SCORE_THRESHOLD     = 50  # minimum score for track inclusion (0-100)
 CALLBACK_DATA_MAX   = 60
 TRACK_STORE_MAX     = 20
 TRACK_FETCH_LIMIT   = 50
@@ -972,6 +987,33 @@ def select_tracks(artists, size=None, skip_recent=True):
     _recent_artists.extend(artists_used)
     _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
     return tracks
+
+
+def _calculate_track_score(track, track_year, pool_median_year, genre=None):
+    """
+    3-layer scoring (0-100) for track authenticity in historical genre playlists.
+    Layer 1 — Temporal Context  (0-40 pts): proximity to pool median year
+    Layer 2 — Contamination     (-30 pts):  penalty for modern revivals (≥2010)
+    Layer 3 — Genre Identity    (60 pts):   base score, expandable in future
+    Threshold: SCORE_THRESHOLD (50).  Tracks without year data score 80 (pass).
+    """
+    score = 60  # base
+
+    if track_year and pool_median_year:
+        dist = abs(track_year - pool_median_year)
+        if   dist <=  5: score += 40
+        elif dist <= 10: score += 30
+        elif dist <= 15: score += 20
+        elif dist <= 25: score += 10
+        # >25 years from median: 0 temporal points
+    else:
+        score += 20  # no year data — moderate benefit of doubt
+
+    if track_year and track_year >= 2010:
+        score -= 30  # modern revival / remake penalty
+
+    return max(0, min(100, score))
+
 
 # ─── Era-based artist pool — Discogs approach ────────────────────────────────
 
@@ -3702,9 +3744,9 @@ def handle_buttons(update, context):
             _recent_artists.extend(artists_used)
             _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
 
-            # ── Dynamic Era Detection (All Time mode only) ────────────────────
+            # ── Scoring filter (All Time mode only) ──────────────────────────
             if not decades and len(tracks) >= 10:
-                log.info("Fetching track years from MusicBrainz for temporal filtering...")
+                log.info("Fetching track years from MusicBrainz for scoring filter...")
                 track_dicts = []
                 for t_str in tracks:
                     parts = t_str.split(" - ", 1)
@@ -3717,27 +3759,24 @@ def handle_buttons(update, context):
                 log.info(f"Years obtained for {years_found}/{len(track_dicts)} tracks")
 
                 years_only = sorted(t["year"] for t in track_dicts if t.get("year"))
-                if years_only:
-                    year_span   = years_only[-1] - years_only[0]
-                    decades_span = (year_span // 10) + 1
-                    log.info(f"Temporal range: {years_only[0]}-{years_only[-1]} ({decades_span} decades)")
+                pool_median_year = None
+                if len(years_only) >= 10:
+                    pool_median_year = years_only[len(years_only) // 2]
+                    log.info(f"[Scoring] Pool median year: {pool_median_year} "
+                             f"(range {years_only[0]}-{years_only[-1]})")
 
-                    if decades_span >= 4:
-                        # High spread — auto-detect era limit from median cluster
-                        median_year = years_only[len(years_only) // 2]
-                        year_limit  = median_year + 15
-                        log.info(f"[Auto Era Limit] Median: {median_year}, limit: ≤{year_limit}")
-                        before      = len(track_dicts)
-                        for t in track_dicts:
-                            if t.get("year") and t["year"] > year_limit:
-                                log.info(f"[Era Filter] Excluded: {t['str'][:50]} (year {t['year']} > {year_limit})")
-                        track_dicts = [t for t in track_dicts
-                                       if t.get("year") is None or t["year"] <= year_limit]
-                        log.info(f"[Era Filter] Kept {len(track_dicts)}/{before} tracks (≤{year_limit})")
-                        tracks = [t["str"] for t in track_dicts]
-                    elif should_apply_temporal_filter(track_dicts):
-                        filtered_dicts = filter_by_detected_era(track_dicts)
-                        tracks = [t["str"] for t in filtered_dicts]
+                scored = []
+                for t in track_dicts:
+                    sc = _calculate_track_score(t["str"], t.get("year"), pool_median_year, genre=style)
+                    if sc >= SCORE_THRESHOLD:
+                        scored.append(t["str"])
+                    else:
+                        yr = f"year {t['year']}" if t.get("year") else "no year"
+                        log.info(f"[Score Filter] Excluded: {t['str'][:50]} "
+                                 f"(score {sc} < {SCORE_THRESHOLD}, {yr})")
+                log.info(f"[Score Filter] Kept {len(scored)}/{len(tracks)} tracks "
+                         f"(score ≥{SCORE_THRESHOLD})")
+                tracks = scored
 
             # Track user genre profile silently
             _update_user_genre_profile(chat_id, style, decades)
