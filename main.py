@@ -2971,7 +2971,7 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
             f"{title}\n\nNo new tracks found.\n\nYour history may be full.\nUse /clear to start fresh.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🗑️ Clear", callback_data="cmd|clear_confirm")],
-                [InlineKeyboardButton("🍌 Main menu",  callback_data="cmd|menu")],
+                [InlineKeyboardButton("🍌 Menu",  callback_data="cmd|menu")],
             ])
         )
         return
@@ -3379,7 +3379,7 @@ def _build_map_buttons(display_name, sorted_styles, info, chat_id):
             callback_data=f"map_styles|{chat_id}|0"
         )])
 
-    buttons.append([InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")])
+    buttons.append([InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")])
     return buttons
 
 # ─── Tags renderer ────────────────────────────────────────────────────────────
@@ -3534,7 +3534,7 @@ def _render_status(message):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🗑️ Clear history",       callback_data="cmd|clear_confirm")],
             [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_open")],
-            [InlineKeyboardButton("🍌 Main menu",           callback_data="cmd|menu")],
+            [InlineKeyboardButton("🍌 Menu",           callback_data="cmd|menu")],
         ])
     )
 
@@ -3545,7 +3545,7 @@ def _do_reset(message):
     _recent_artists = []
     message.reply_text(
         "History cleared.\n\nTags are kept.\nFresh tracks on your next request.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")]])
     )
 
 def _show_clear_confirm(query):
@@ -3580,8 +3580,17 @@ def handle_buttons(update, context):
     if action == "cmd":
 
         if value == "menu":
+            has_photo = map_memory.get(chat_id, {}).get("has_photo", False)
             map_memory.pop(chat_id, None)
-            query.edit_message_text(f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.", parse_mode="HTML", reply_markup=main_menu_markup())
+            menu_text = f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely."
+            if has_photo:
+                try:
+                    query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+                message.reply_text(menu_text, parse_mode="HTML", reply_markup=main_menu_markup())
+            else:
+                query.edit_message_text(menu_text, parse_mode="HTML", reply_markup=main_menu_markup())
 
         elif value == "picks_menu":
             map_memory.pop(chat_id, None)
@@ -3660,7 +3669,7 @@ def handle_buttons(update, context):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🗑️ Clear history",       callback_data="cmd|clear_confirm")],
                     [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_open")],
-                    [InlineKeyboardButton("🍌 Main menu",           callback_data="cmd|menu")],
+                    [InlineKeyboardButton("🍌 Menu",           callback_data="cmd|menu")],
                 ])
             )
 
@@ -3671,7 +3680,7 @@ def handle_buttons(update, context):
             _do_reset(message)
         elif value == "help":
             query.edit_message_text(_help_text(), parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]]))
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")]]))
 
     # ── decade_open: show decade toggle grid ─────────────────────────────────
     elif action == "decade_open":
@@ -4370,7 +4379,7 @@ def handle_buttons(update, context):
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         if not sorted_tags:
             query.edit_message_text("Tag collection is empty.\n\nUse /artist <name> to explore an artist and start collecting genres.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]]))
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")]]))
             return
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         page = min(page, total_pages - 1)
@@ -4470,7 +4479,7 @@ def handle_buttons(update, context):
         query.edit_message_text(
             "🗑️ Tags reset.\n\nAll visible and hidden tags removed.\n\nNew tags will build up as you use Kurator.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")],
+                [InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")],
             ])
         )
 
@@ -4538,7 +4547,7 @@ def handle_buttons(update, context):
         if not isinstance(stored, dict) or not stored:
             query.edit_message_text(
                 "Playlist expired — generate a new one.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")]])
             )
             return
         text = stored.get("text")
@@ -4675,7 +4684,7 @@ from telegram import BotCommand
 try:
     updater.bot.delete_my_commands()
     updater.bot.set_my_commands([
-        BotCommand("start",    "🍌 Main menu"),
+        BotCommand("start",    "🍌 Menu"),
         BotCommand("playlist", "🎧 Kurator's Playlist"),
         BotCommand("dig",      "⛏️ Dig deeper"),
         BotCommand("rare",     "💎 Rare finds"),
