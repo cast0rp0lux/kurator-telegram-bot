@@ -21,10 +21,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.2)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.3)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.8.3": {
+        "date": "2026-04-18",
+        "changes": [
+            "Auto Era Limit: géneros con distribución ≥4 décadas filtran tracks modernos automáticamente",
+            "Mediana del pool + 15 años de buffer — sin hardcodear géneros",
+            "Italo-Disco All Time: tracks post-2010 eliminados automáticamente"
+        ],
+        "technical": [
+            "Dynamic Era Detection: si decades_span >= 4 → median_year + 15 como year_limit",
+            "Si decades_span < 4 → comportamiento anterior (should_apply_temporal_filter)",
+            "Log verbose: [Auto Era Limit] median, limit; [Era Filter] cada track excluido"
+        ]
+    },
     "6.8.2": {
         "date": "2026-04-17",
         "changes": [
@@ -3702,9 +3715,29 @@ def handle_buttons(update, context):
                         track_dicts.append({"str": t_str, "year": None})
                 years_found = sum(1 for t in track_dicts if t.get("year"))
                 log.info(f"Years obtained for {years_found}/{len(track_dicts)} tracks")
-                if should_apply_temporal_filter(track_dicts):
-                    filtered_dicts = filter_by_detected_era(track_dicts)
-                    tracks = [t["str"] for t in filtered_dicts]
+
+                years_only = sorted(t["year"] for t in track_dicts if t.get("year"))
+                if years_only:
+                    year_span   = years_only[-1] - years_only[0]
+                    decades_span = (year_span // 10) + 1
+                    log.info(f"Temporal range: {years_only[0]}-{years_only[-1]} ({decades_span} decades)")
+
+                    if decades_span >= 4:
+                        # High spread — auto-detect era limit from median cluster
+                        median_year = years_only[len(years_only) // 2]
+                        year_limit  = median_year + 15
+                        log.info(f"[Auto Era Limit] Median: {median_year}, limit: ≤{year_limit}")
+                        before      = len(track_dicts)
+                        for t in track_dicts:
+                            if t.get("year") and t["year"] > year_limit:
+                                log.info(f"[Era Filter] Excluded: {t['str'][:50]} (year {t['year']} > {year_limit})")
+                        track_dicts = [t for t in track_dicts
+                                       if t.get("year") is None or t["year"] <= year_limit]
+                        log.info(f"[Era Filter] Kept {len(track_dicts)}/{before} tracks (≤{year_limit})")
+                        tracks = [t["str"] for t in track_dicts]
+                    elif should_apply_temporal_filter(track_dicts):
+                        filtered_dicts = filter_by_detected_era(track_dicts)
+                        tracks = [t["str"] for t in filtered_dicts]
 
             # Track user genre profile silently
             _update_user_genre_profile(chat_id, style, decades)
