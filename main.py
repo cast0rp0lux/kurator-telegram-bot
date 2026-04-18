@@ -21,10 +21,22 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.0)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.2)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.2": {
+        "date": "2026-04-18",
+        "changes": [
+            "Avatar circular del artista: recorte circular con fondo oscuro via PIL",
+            "Eliminado texto 'Explore:' del caption de la tarjeta",
+        ],
+        "technical": [
+            "_get_artist_image: scrape og:image → PIL circular crop (300x300, bg #17212b)",
+            "_render_map: reply_photo con BytesIO(img_bytes), caption sin 'Explore:'",
+            "Pillow añadido a requirements.txt",
+        ]
+    },
     "6.9.0": {
         "date": "2026-04-18",
         "changes": [
@@ -1496,26 +1508,48 @@ def _get_artist_primary_tags(artist):
 _artist_image_cache = {}
 
 def _get_artist_image(artist):
-    """Return artist image URL from Last.fm page og:image (API images are deprecated)."""
+    """Return circular artist avatar as JPEG bytes, or None."""
     if artist in _artist_image_cache:
         return _artist_image_cache[artist]
     _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
+    img_url = None
     try:
         data = lastfm("artist.getinfo", artist=artist)
         lfm_url = data.get("artist", {}).get("url", "")
         if lfm_url:
-            r = requests.get(lfm_url, timeout=8,
-                             headers={"User-Agent": "Mozilla/5.0"})
-            match = re.search(r'<meta property="og:image"\s+content="([^"]+)"', r.text)
-            if match:
-                img_url = match.group(1)
-                if _PLACEHOLDER not in img_url:
-                    _artist_image_cache[artist] = img_url
-                    return img_url
+            r = requests.get(lfm_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            m = re.search(r'<meta property="og:image"\s+content="([^"]+)"', r.text)
+            if m and _PLACEHOLDER not in m.group(1):
+                img_url = m.group(1)
     except Exception as e:
-        log.error(f"Last.fm image for {artist}: {e}")
-    _artist_image_cache[artist] = None
-    return None
+        log.error(f"Last.fm image lookup for {artist}: {e}")
+
+    if not img_url:
+        _artist_image_cache[artist] = None
+        return None
+
+    try:
+        from PIL import Image, ImageDraw
+        import io as _io
+        raw = requests.get(img_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"}).content
+        img = Image.open(_io.BytesIO(raw)).convert("RGB")
+        w, h = img.size
+        sq = min(w, h)
+        img = img.crop(((w - sq) // 2, (h - sq) // 2, (w + sq) // 2, (h + sq) // 2))
+        img = img.resize((300, 300), Image.LANCZOS)
+        bg   = Image.new("RGB", (300, 300), (23, 33, 43))
+        mask = Image.new("L",   (300, 300), 0)
+        ImageDraw.Draw(mask).ellipse((2, 2, 298, 298), fill=255)
+        bg.paste(img, mask=mask)
+        buf = _io.BytesIO()
+        bg.save(buf, "JPEG", quality=88)
+        result = buf.getvalue()
+        _artist_image_cache[artist] = result
+        return result
+    except Exception as e:
+        log.error(f"Image processing for {artist}: {e}")
+        _artist_image_cache[artist] = None
+        return None
 
 
 def _edit_card_message(query, chat_id, text, markup):
@@ -3257,8 +3291,8 @@ def _render_map(message, artist_query, chat_id):
         pass  # keep empty — card will just show no genre line
 
     display_name = _artist_display_name(info, artist_query)
-    photo_url    = _get_artist_image(artist_query)
-    has_photo    = bool(photo_url)
+    img_bytes    = _get_artist_image(artist_query)
+    has_photo    = img_bytes is not None
 
     map_memory[chat_id] = {
         "artist":       artist_query,
@@ -3274,9 +3308,10 @@ def _render_map(message, artist_query, chat_id):
 
     if has_photo:
         try:
+            import io as _io
             message.reply_photo(
-                photo=photo_url,
-                caption=f"{card_text}\n\nExplore:",
+                photo=_io.BytesIO(img_bytes),
+                caption=card_text,
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
             return
@@ -3286,7 +3321,7 @@ def _render_map(message, artist_query, chat_id):
             save_map_memory()
 
     message.reply_text(
-        f"{card_text}\n\nExplore:",
+        card_text,
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -4196,7 +4231,7 @@ def handle_buttons(update, context):
             return
         card_text = _format_artist_card(artist, info)
         buttons   = _build_map_buttons(display_name, styles, info, chat_id)
-        _edit_card_message(query, chat_id, f"{card_text}\n\nExplore:", InlineKeyboardMarkup(buttons))
+        _edit_card_message(query, chat_id, card_text, InlineKeyboardMarkup(buttons))
 
     elif action == "map_back":
         history_stack = _nav_history.get(chat_id, [])
@@ -4230,7 +4265,7 @@ def handle_buttons(update, context):
             pass
         card_text = _format_artist_card(artist, info)
         buttons   = _build_map_buttons(display_name, styles, info, chat_id)
-        message.reply_text(f"{card_text}\n\nExplore:", reply_markup=InlineKeyboardMarkup(buttons))
+        message.reply_text(card_text, reply_markup=InlineKeyboardMarkup(buttons))
 
     # ── tags ──────────────────────────────────────────────────────────────────
     elif action == "tags_page":
