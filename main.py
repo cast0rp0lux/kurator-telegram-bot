@@ -1496,20 +1496,22 @@ def _get_artist_primary_tags(artist):
 _artist_image_cache = {}
 
 def _get_artist_image(artist):
-    """Return Last.fm artist image URL (extralarge/large), or None if unavailable."""
+    """Return artist image URL from Last.fm page og:image (API images are deprecated)."""
     if artist in _artist_image_cache:
         return _artist_image_cache[artist]
-    _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f.png"
+    _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
     try:
         data = lastfm("artist.getinfo", artist=artist)
-        images = data.get("artist", {}).get("image", [])
-        for size in ("extralarge", "large", "medium"):
-            for img in images:
-                if img.get("size") == size:
-                    url = img.get("#text", "")
-                    if url and _PLACEHOLDER not in url:
-                        _artist_image_cache[artist] = url
-                        return url
+        lfm_url = data.get("artist", {}).get("url", "")
+        if lfm_url:
+            r = requests.get(lfm_url, timeout=8,
+                             headers={"User-Agent": "Mozilla/5.0"})
+            match = re.search(r'<meta property="og:image"\s+content="([^"]+)"', r.text)
+            if match:
+                img_url = match.group(1)
+                if _PLACEHOLDER not in img_url:
+                    _artist_image_cache[artist] = img_url
+                    return img_url
     except Exception as e:
         log.error(f"Last.fm image for {artist}: {e}")
     _artist_image_cache[artist] = None
