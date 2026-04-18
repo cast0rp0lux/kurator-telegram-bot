@@ -2987,9 +2987,6 @@ def changelog_command(update, context):
     """Show development changelog, newest versions first, split if needed."""
     import html as _html
 
-    if update.message.chat_id != ADMIN_CHAT_ID:
-        return
-
     sorted_versions = sorted(CHANGELOG.keys(), key=lambda x: float(x), reverse=True)
 
     chunks   = []
