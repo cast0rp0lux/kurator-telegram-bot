@@ -1508,7 +1508,7 @@ def _get_artist_primary_tags(artist):
 _artist_image_cache = {}
 
 def _get_artist_image(artist):
-    """Return circular artist avatar as JPEG bytes, or None."""
+    """Return artist photo as square 600×600 JPEG bytes, or None."""
     if artist in _artist_image_cache:
         return _artist_image_cache[artist]
     _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
@@ -1529,20 +1529,16 @@ def _get_artist_image(artist):
         return None
 
     try:
-        from PIL import Image, ImageDraw
+        from PIL import Image
         import io as _io
         raw = requests.get(img_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"}).content
         img = Image.open(_io.BytesIO(raw)).convert("RGB")
         w, h = img.size
         sq = min(w, h)
         img = img.crop(((w - sq) // 2, (h - sq) // 2, (w + sq) // 2, (h + sq) // 2))
-        img = img.resize((300, 300), Image.LANCZOS)
-        bg   = Image.new("RGB", (300, 300), (23, 33, 43))
-        mask = Image.new("L",   (300, 300), 0)
-        ImageDraw.Draw(mask).ellipse((2, 2, 298, 298), fill=255)
-        bg.paste(img, mask=mask)
+        img = img.resize((600, 600), Image.LANCZOS)
         buf = _io.BytesIO()
-        bg.save(buf, "JPEG", quality=88)
+        img.save(buf, "JPEG", quality=88)
         result = buf.getvalue()
         _artist_image_cache[artist] = result
         return result
