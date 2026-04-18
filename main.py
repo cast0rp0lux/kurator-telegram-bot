@@ -1512,15 +1512,38 @@ def _get_artist_image(artist):
     if artist in _artist_image_cache:
         return _artist_image_cache[artist]
     _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
+    _CDN        = "lastfm.freetls.fastly.net/i/u/"
+    _HEADERS    = {"User-Agent": "Mozilla/5.0"}
     img_url = None
+
+    def _og(html):
+        for pat in [
+            r'<meta property="og:image"\s+content="([^"]+)"',
+            r'<meta content="([^"]+)"\s+property="og:image"',
+        ]:
+            m = re.search(pat, html)
+            if m and _PLACEHOLDER not in m.group(1):
+                return m.group(1)
+        return None
+
+    def _first_cdn(html):
+        for m in re.finditer(r'https://' + _CDN + r'[^\s"\'<>]+', html):
+            url = m.group(0).split("?")[0]
+            if _PLACEHOLDER not in url and url.endswith((".jpg", ".jpeg", ".png")):
+                return re.sub(r'/\d+x\d+[^/]*/', '/300x300/', url)
+        return None
+
     try:
-        data = lastfm("artist.getinfo", artist=artist)
+        data    = lastfm("artist.getinfo", artist=artist)
         lfm_url = data.get("artist", {}).get("url", "")
         if lfm_url:
-            r = requests.get(lfm_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-            m = re.search(r'<meta property="og:image"\s+content="([^"]+)"', r.text)
-            if m and _PLACEHOLDER not in m.group(1):
-                img_url = m.group(1)
+            html = requests.get(lfm_url, timeout=8, headers=_HEADERS).text
+            img_url = _og(html)
+            if not img_url:
+                gallery_html = requests.get(
+                    lfm_url.rstrip("/") + "/+images", timeout=8, headers=_HEADERS
+                ).text
+                img_url = _first_cdn(gallery_html)
     except Exception as e:
         log.error(f"Last.fm image lookup for {artist}: {e}")
 
@@ -1531,7 +1554,7 @@ def _get_artist_image(artist):
     try:
         from PIL import Image
         import io as _io
-        raw = requests.get(img_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"}).content
+        raw = requests.get(img_url, timeout=8, headers=_HEADERS).content
         img = Image.open(_io.BytesIO(raw)).convert("RGB")
         w, h = img.size
         sq = min(w, h)
