@@ -1512,9 +1512,13 @@ def _get_artist_image(artist):
     if artist in _artist_image_cache:
         return _artist_image_cache[artist]
     _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
-    _CDN        = "lastfm.freetls.fastly.net/i/u/"
-    _HEADERS    = {"User-Agent": "Mozilla/5.0"}
+    _HEADERS     = {"User-Agent": "Mozilla/5.0"}
     img_url = None
+
+    def _norm_size(url):
+        url = re.sub(r'/\d+x\d+/', '/300x300/', url)
+        url = re.sub(r'/\d+s/',    '/300x300/', url)
+        return url
 
     def _og(html):
         for pat in [
@@ -1526,26 +1530,49 @@ def _get_artist_image(artist):
                 return m.group(1)
         return None
 
-    def _first_cdn(html):
-        for m in re.finditer(r'https://' + _CDN + r'[^\s"\'<>]+', html):
-            url = m.group(0).split("?")[0]
-            if _PLACEHOLDER not in url and url.endswith((".jpg", ".jpeg", ".png")):
-                return re.sub(r'/\d+x\d+[^/]*/', '/300x300/', url)
+    def _bg(html):
+        m = re.search(r'background-image:\s*url\([\'"]?(https://[^\'\")<>]+)[\'"]?\)', html)
+        if m and _PLACEHOLDER not in m.group(1):
+            return _norm_size(m.group(1))
         return None
 
+    def _first_cdn(html):
+        for m in re.finditer(r'https://lastfm\.freetls\.fastly\.net/i/u/[^\s"\'<>\\]+', html):
+            url = m.group(0).replace("\\/", "/").split("?")[0].rstrip(".,;")
+            if _PLACEHOLDER not in url and re.search(r'\.(jpg|jpeg|png)$', url, re.I):
+                return _norm_size(url)
+        return None
+
+    # ── 1) Last.fm page + gallery ──────────────────────────────────────────────
     try:
         data    = lastfm("artist.getinfo", artist=artist)
         lfm_url = data.get("artist", {}).get("url", "")
         if lfm_url:
-            html = requests.get(lfm_url, timeout=8, headers=_HEADERS).text
-            img_url = _og(html)
+            html    = requests.get(lfm_url, timeout=8, headers=_HEADERS).text
+            img_url = _og(html) or _bg(html)
             if not img_url:
-                gallery_html = requests.get(
-                    lfm_url.rstrip("/") + "/+images", timeout=8, headers=_HEADERS
-                ).text
-                img_url = _first_cdn(gallery_html)
+                gallery = requests.get(lfm_url.rstrip("/") + "/+images",
+                                       timeout=8, headers=_HEADERS).text
+                img_url = _first_cdn(gallery) or _og(gallery)
     except Exception as e:
         log.error(f"Last.fm image lookup for {artist}: {e}")
+
+    # ── 2) Wikipedia fallback ──────────────────────────────────────────────────
+    if not img_url:
+        try:
+            wp = requests.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={"action": "query", "titles": artist,
+                        "prop": "pageimages", "format": "json", "pithumbsize": 600},
+                timeout=5, headers=_HEADERS
+            ).json()
+            for page in wp.get("query", {}).get("pages", {}).values():
+                src = page.get("thumbnail", {}).get("source")
+                if src:
+                    img_url = src
+                    break
+        except Exception as e:
+            log.error(f"Wikipedia image for {artist}: {e}")
 
     if not img_url:
         _artist_image_cache[artist] = None
