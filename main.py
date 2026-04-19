@@ -4067,7 +4067,7 @@ def handle_buttons(update, context):
             query, chat_id,
             f"{display_name}\n\n{bio}{link}",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"← Back to {display_name[:20]}", callback_data=f"map_back|{chat_id}")
+                InlineKeyboardButton(f"← Back to {display_name[:20]}", callback_data=f"card_back|{chat_id}")
             ]])
         )
 
