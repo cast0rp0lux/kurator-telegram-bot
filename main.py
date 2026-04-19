@@ -2721,19 +2721,31 @@ def _get_user_genre_profile(chat_id):
         return {"genres": [], "decades": []}
 
 
+def _strip_the(s):
+    l = s.lower()
+    return l[4:] if l.startswith("the ") else l
+
 def _mb_find_artist(artist_query):
     """
     Search MusicBrainz for an artist. Returns (mbid, official_name) or (None, None).
-    Tries exact name match first, then falls back to top result with score >= 90.
+    Matches exact name or The-prefix variants (e.g. 'The X' vs 'X').
     """
-    data = _mb_get("artist/", {"query": f'artist:"{artist_query}"', "limit": 5})
-    candidates = data.get("artists", [])
-    for c in candidates:
-        if int(c.get("score", 0)) >= 80 and \
-           c.get("name", "").lower() == artist_query.lower():
-            return c.get("id"), c.get("name")
-    if candidates and int(candidates[0].get("score", 0)) >= 90:
-        return candidates[0].get("id"), candidates[0].get("name")
+    queries = [artist_query]
+    aq_lower = artist_query.lower()
+    if aq_lower.startswith("the "):
+        queries.append(artist_query[4:].strip())
+    else:
+        queries.append("The " + artist_query)
+
+    for q in queries:
+        data = _mb_get("artist/", {"query": f'artist:"{q}"', "limit": 5})
+        candidates = data.get("artists", [])
+        for c in candidates:
+            if int(c.get("score", 0)) >= 80 and \
+               _strip_the(c.get("name", "")) == _strip_the(artist_query):
+                return c.get("id"), c.get("name")
+        if candidates and int(candidates[0].get("score", 0)) >= 90:
+            return candidates[0].get("id"), candidates[0].get("name")
     return None, None
 
 def _mb_artist_full(mbid):
@@ -3336,29 +3348,35 @@ def cancel_command(update, context):
 # ─── Map renderer ─────────────────────────────────────────────────────────────
 
 def _render_map(message, artist_query, chat_id):
-    # Fetch Discogs styles
-    try:
-        data = requests.get(
-            "https://api.discogs.com/database/search",
-            params={"artist": artist_query, "type": "release",
-                    "per_page": 100, "token": DISCOGS_TOKEN},
-            timeout=15
-        ).json()
-    except Exception as e:
-        log.error(f"Discogs error: {e}")
-        data = {}
+    def _discogs_styles(name):
+        try:
+            data = requests.get(
+                "https://api.discogs.com/database/search",
+                params={"artist": name, "type": "release",
+                        "per_page": 100, "token": DISCOGS_TOKEN},
+                timeout=15
+            ).json()
+        except Exception as e:
+            log.error(f"Discogs error for '{name}': {e}")
+            return {}, []
+        counter = {}
+        for rel in data.get("results", []):
+            for s in rel.get("style", []):
+                counter[s] = counter.get(s, 0) + 1
+        styles = sorted(
+            [(s, c) for s, c in counter.items() if c >= 5],
+            key=lambda x: x[1], reverse=True
+        )[:12]
+        if not styles:
+            styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:12]
+        return counter, styles
 
-    counter = {}
-    for rel in data.get("results", []):
-        for s in rel.get("style", []):
-            counter[s] = counter.get(s, 0) + 1
-
-    sorted_styles = sorted(
-        [(s, c) for s, c in counter.items() if c >= 5],
-        key=lambda x: x[1], reverse=True
-    )[:12]
-    if not sorted_styles:
-        sorted_styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:12]
+    counter, sorted_styles = _discogs_styles(artist_query)
+    # If no results and name starts with "The ", retry without it
+    if not sorted_styles and artist_query.lower().startswith("the "):
+        fallback_name = artist_query[4:].strip()
+        log.info(f"[Discogs] No styles for '{artist_query}', retrying as '{fallback_name}'")
+        counter, sorted_styles = _discogs_styles(fallback_name)
 
     # Save filtered Discogs styles to tag_index (same blacklist as _discover_and_add_styles)
     _RENDER_MAP_STYLE_BLACKLIST = {
