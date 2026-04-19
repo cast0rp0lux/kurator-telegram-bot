@@ -2081,13 +2081,16 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
             log.info(f"[Seeds] Sample: {', '.join(validated_pool[:5])}")
             seed_pool = validated_pool
 
-    seeds = random.sample(seed_pool, min(5, len(seed_pool)))
-    log.info(f"Genre '{genre}' seeds: {seeds}")
+    # Step 3: expand seeds via artist.getsimilar
+    # Use all validated seeds (up to 30, already shuffled) instead of a 5-seed sample.
+    # Each seed returns up to SIMILAR_EXPANSION (60) similar artists.
+    MAX_EXPANSION_SEEDS = 30
+    seeds_to_expand = seed_pool[:MAX_EXPANSION_SEEDS]
+    log.info(f"[Expansion] Using {len(seeds_to_expand)} seeds (SIMILAR_EXPANSION={SIMILAR_EXPANSION} each)")
 
-    # Step 3: expand each seed via artist.getsimilar
     expanded = set()
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        futures = {ex.submit(_fetch_similar_names, seed): seed for seed in seeds}
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {ex.submit(_fetch_similar_names, seed): seed for seed in seeds_to_expand}
         for f in as_completed(futures):
             try:
                 similar = f.result()
@@ -2096,9 +2099,10 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
                 pass
 
     # Add seeds themselves to pool
-    expanded.update(seeds)
+    expanded.update(seeds_to_expand)
     candidates = [a for a in expanded if _is_valid_artist_name(a)]
     random.shuffle(candidates)
+    log.info(f"[Expansion] {len(candidates)} candidates after dedup + name filter")
 
     # Step 4: filter by genre tags — reject artists whose tags don't match genre
     valid_genres = _get_valid_genres_for(genre)
