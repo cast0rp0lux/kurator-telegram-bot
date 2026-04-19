@@ -703,11 +703,28 @@ def normalize_artist(name):
     n = re.sub(r'\s*with\s+.*$', '', n).strip()
     return n
 
+_MINOR_WORDS = {
+    "a", "an", "the", "and", "but", "or", "nor", "for", "so", "yet",
+    "at", "by", "from", "in", "into", "of", "off", "on", "onto", "out",
+    "over", "per", "to", "up", "via", "with",
+}
+
+def _normalize_artist_caps(name):
+    """Title-case with standard minor-word rules (Chicago style)."""
+    words = name.split()
+    result = []
+    for i, w in enumerate(words):
+        if i == 0 or w.lower() not in _MINOR_WORDS:
+            result.append(w.capitalize())
+        else:
+            result.append(w.lower())
+    return " ".join(result)
+
 def _resolve_artist_name(user_input):
     """
-    Resolve a user-typed artist name to the Last.fm canonical name.
-    Tries title-case, original, with/without 'The' prefix.
-    Returns canonical name string (falls back to user_input if nothing found).
+    Resolve a user-typed artist name to the Last.fm canonical name,
+    then normalize capitalization (minor words lowercase).
+    Falls back to user_input if nothing found.
     """
     raw = user_input.strip()
     if not raw:
@@ -736,6 +753,7 @@ def _resolve_artist_name(user_input):
                 continue
             name = data.get("artist", {}).get("name", "")
             if name:
+                name = _normalize_artist_caps(name)
                 log.info(f"[Resolve] '{raw}' → '{name}' (via '{v}')")
                 return name
         except Exception:
