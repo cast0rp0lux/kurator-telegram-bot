@@ -2050,7 +2050,7 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
         seed_pool = top_names[:50]
 
     # Temporal validation: filter seed_pool to artists who began in target decades
-    # (MB rate limiting is handled inside _get_musicbrainz_artist_data via _mb_get)
+    # (MB rate limiting handled inside _get_musicbrainz_artist_data via _mb_get global lock)
     if decades:
         log.info(f"[Seed Validation] Validating seeds for {decades}")
         validated_pool = []
@@ -2063,14 +2063,22 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
             else:
                 rejected_seeds.append((artist, begin_year))
                 log.info(f"[Seed] ✗ '{artist}' - {reason}")
-            if len(validated_pool) >= 20:
+            if len(validated_pool) >= 40:
                 break
         total_checked = len(validated_pool) + len(rejected_seeds)
         log.info(f"[Seed Validation] Kept {len(validated_pool)}/{total_checked} checked ({len(rejected_seeds)} rejected)")
         if rejected_seeds:
-            examples = [f"{n} ({y})" for n, y in rejected_seeds[:5]]
-            log.info(f"[Seed Validation] Rejected: {', '.join(examples)}")
+            decade_max = max(DECADE_YEARS[d][1] for d in decades if d in DECADE_YEARS)
+            too_late  = [f"{n} ({y})" for n, y in rejected_seeds if y and y > decade_max]
+            too_early = [f"{n} ({y})" for n, y in rejected_seeds if y and y <= decade_max]
+            if too_late:
+                log.info(f"[Seed Validation] Too late: {', '.join(too_late[:5])}")
+            if too_early:
+                log.info(f"[Seed Validation] Too early: {', '.join(too_early[:3])}")
         if validated_pool:
+            random.shuffle(validated_pool)
+            log.info(f"[Seeds] Shuffled {len(validated_pool)} validated seeds for diversity")
+            log.info(f"[Seeds] Sample: {', '.join(validated_pool[:5])}")
             seed_pool = validated_pool
 
     seeds = random.sample(seed_pool, min(5, len(seed_pool)))
@@ -2532,9 +2540,12 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
     random.shuffle(filtered_pool)
     tracks             = []
     keys_added         = set()
-    artist_track_count = {}  # up to 2 tracks per artist — fills thin pools
+    artist_track_count = {}  # per-artist track count to limit repetition
     artists_used       = []
     BATCH_SIZE         = 20  # submit in small batches, stop when target reached
+    MAX_PER_ARTIST     = 2 if len(filtered_pool) < 60 else 1
+
+    log.info(f"[Era Tracks] pool={len(filtered_pool)}, MAX_PER_ARTIST={MAX_PER_ARTIST}")
 
     for i in range(0, min(len(filtered_pool), target * 4), BATCH_SIZE):
         if len(tracks) >= target:
@@ -2554,7 +2565,7 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
                         artist, track_name, key = result
                         artist_norm = normalize_artist(artist)
                         track_count = artist_track_count.get(artist_norm, 0)
-                        if track_count >= 2:
+                        if track_count >= MAX_PER_ARTIST:
                             continue
                         if not track_in_history(key) and key not in keys_added:
                             tracks.append(f"{artist} - {track_name}")
@@ -2894,7 +2905,8 @@ def _mb_find_artist(artist_query):
 def _get_musicbrainz_artist_data(artist):
     """
     Search MusicBrainz for an artist and return begin_year.
-    Uses the same The-prefix tolerance as _mb_find_artist.
+    Only accepts Groups (bands), not Persons — avoids confusing birth year
+    (e.g. Slash 1965) with band formation year.
     Returns dict {"begin_year": int|None, "name": str, "mbid": str} or None.
     """
     queries = [artist]
@@ -2907,15 +2919,31 @@ def _get_musicbrainz_artist_data(artist):
     for q in queries:
         data = _mb_get("artist/", {"query": f'artist:"{q}"', "limit": 5})
         candidates = data.get("artists", [])
+
+        # Prefer Group match at score >= 80 with name match
         match = None
         for c in candidates:
             if int(c.get("score", 0)) >= 80 and \
                _strip_the(c.get("name", "")) == _strip_the(artist):
-                match = c
-                break
-        if not match and candidates and int(candidates[0].get("score", 0)) >= 90:
-            match = candidates[0]
+                if c.get("type") == "Group":
+                    match = c
+                    break
+                elif c.get("type") == "Person":
+                    log.info(f"[MB] '{artist}' matched as Person — skipping (want Group)")
+                    # Keep looking for a Group variant
+                elif match is None:
+                    match = c  # non-Person, non-Group fallback
+
+        # Score >= 90 fallback: accept only if not Person
+        if not match and candidates:
+            top = candidates[0]
+            if int(top.get("score", 0)) >= 90 and top.get("type") != "Person":
+                match = top
+
         if match:
+            if match.get("type") == "Person":
+                log.info(f"[MB] '{artist}' is Person — skipping to avoid birth year")
+                continue  # try next query variant
             begin_date = (match.get("life-span") or {}).get("begin") or ""
             begin_year = None
             if begin_date:
@@ -2923,7 +2951,8 @@ def _get_musicbrainz_artist_data(artist):
                     begin_year = int(begin_date.split("-")[0])
                 except (ValueError, IndexError):
                     pass
-            return {"begin_year": begin_year, "name": match.get("name"), "mbid": match.get("id")}
+            return {"begin_year": begin_year, "name": match.get("name"), "mbid": match.get("id"),
+                    "type": match.get("type")}
     return None
 
 
@@ -2947,7 +2976,7 @@ def _validate_seed_temporal_coherence(artist, target_decades):
         _seed_validation_cache[cache_key] = result
         return result
 
-    min_year = min(r[0] for r in year_ranges) - 5  # 5-year buffer for late bloomers
+    min_year = min(r[0] for r in year_ranges) - 10  # 10-year buffer (e.g. Lynyrd Skynyrd 1964 → valid for 70s)
     max_year = max(r[1] for r in year_ranges)
 
     try:
