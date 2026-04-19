@@ -703,8 +703,47 @@ def normalize_artist(name):
     n = re.sub(r'\s*with\s+.*$', '', n).strip()
     return n
 
-def _clean_artist_name(name):
+def _resolve_artist_name(user_input):
     """
+    Resolve a user-typed artist name to the Last.fm canonical name.
+    Tries title-case, original, with/without 'The' prefix.
+    Returns canonical name string (falls back to user_input if nothing found).
+    """
+    raw = user_input.strip()
+    if not raw:
+        return raw
+
+    lower = raw.lower()
+    title = raw.title()
+
+    variants = []
+    for v in [raw, title]:
+        if v not in variants:
+            variants.append(v)
+    if lower.startswith("the "):
+        without = raw[4:].strip().title()
+        if without not in variants:
+            variants.append(without)
+    else:
+        with_the = "The " + title
+        if with_the not in variants:
+            variants.append(with_the)
+
+    for v in variants:
+        try:
+            data = lastfm("artist.getinfo", artist=v)
+            if data.get("error"):
+                continue
+            name = data.get("artist", {}).get("name", "")
+            if name:
+                log.info(f"[Resolve] '{raw}' → '{name}' (via '{v}')")
+                return name
+        except Exception:
+            continue
+
+    return raw  # fallback: use as-is
+
+
     Clean Discogs-style artist names:
     - Remove asterisks: 'Tony Williams*' → 'Tony Williams'
     - Remove disambiguation numbers: 'Solution (4)' → 'Solution'
@@ -3227,7 +3266,7 @@ def map_command(update, context):
             ])
         )
         return
-    artist_query = " ".join(context.args)
+    artist_query = _resolve_artist_name(" ".join(context.args))
 
     # Delete previous "Mapping…" message if exists
     prev_id = _pending_map_msgs.pop(chat_id, None)
@@ -4664,11 +4703,12 @@ def handle_text_reply(update, context):
                 msg.bot.delete_message(chat_id=chat_id, message_id=prev_id)
             except Exception:
                 pass
-        mapping_msg = msg.reply_text(f"🧑‍🎤 Exploring {text.upper()}…")
+        artist_query = _resolve_artist_name(text)
+        mapping_msg = msg.reply_text(f"🧑‍🎤 Exploring {artist_query.upper()}…")
         _pending_map_msgs[chat_id] = mapping_msg.message_id
         sent, timer = _working_message(msg, "🧑‍🎤 Still exploring…")
         _nav_history.pop(chat_id, None)
-        _render_map(msg, text, chat_id)
+        _render_map(msg, artist_query, chat_id)
         _cancel_working(sent, timer)
         _pending_map_msgs.pop(chat_id, None)
         try:
