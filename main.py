@@ -3340,12 +3340,13 @@ def _render_map(message, artist_query, chat_id):
     elif not info["genres"]:
         pass  # keep empty — card will just show no genre line
 
-    display_name = _artist_display_name(info, artist_query)
-    img_bytes    = _get_artist_image(artist_query)
-    has_photo    = img_bytes is not None
+    display_name   = _artist_display_name(info, artist_query)
+    canonical_name = info.get("official_name") or artist_query
+    img_bytes      = _get_artist_image(canonical_name)
+    has_photo      = img_bytes is not None
 
     map_memory[chat_id] = {
-        "artist":       artist_query,
+        "artist":       canonical_name,
         "display_name": display_name,
         "styles":       sorted_styles,
         "info":         info,
