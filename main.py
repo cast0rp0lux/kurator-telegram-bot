@@ -744,10 +744,12 @@ def _resolve_artist_name(user_input):
     return raw  # fallback: use as-is
 
 
+def _clean_artist_name(name):
+    """
     Clean Discogs-style artist names:
-    - Remove asterisks: 'Tony Williams*' → 'Tony Williams'
-    - Remove disambiguation numbers: 'Solution (4)' → 'Solution'
-    - Fix broken UTF-8 encoding: 'WuyÃ©' → 'Wuyé'
+    - Remove asterisks: 'Tony Williams*' -> 'Tony Williams'
+    - Remove disambiguation numbers: 'Solution (4)' -> 'Solution'
+    - Fix broken UTF-8 encoding: 'WuyAe' -> 'Wuye'
     """
     import re
     # Fix broken UTF-8 (latin1 misread as utf-8)
@@ -1640,9 +1642,13 @@ def _get_artist_image(artist):
 def _edit_card_message(query, chat_id, text, markup):
     """Edit a card message: caption edit for photo cards, text edit otherwise."""
     if map_memory.get(chat_id, {}).get("has_photo"):
-        query.edit_message_caption(caption=text, reply_markup=markup)
-    else:
-        query.edit_message_text(text, reply_markup=markup)
+        try:
+            query.edit_message_caption(caption=text, reply_markup=markup)
+            return
+        except Exception:
+            if chat_id in map_memory:
+                map_memory[chat_id]["has_photo"] = False
+    query.edit_message_text(text, reply_markup=markup)
 
 
 def _discover_and_add_styles(artists):
