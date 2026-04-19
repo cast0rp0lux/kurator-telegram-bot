@@ -720,15 +720,15 @@ def _normalize_artist_caps(name):
             result.append(w.lower())
     return " ".join(result)
 
-def _resolve_artist_name(user_input):
+def _search_artist_flexible(user_input):
     """
-    Resolve a user-typed artist name to the Last.fm canonical name,
-    then normalize capitalization (minor words lowercase).
-    Falls back to user_input if nothing found.
+    Find canonical Last.fm name for an artist.
+    Returns (canonical_name, lastfm_data) or (None, {}) if not found.
+    Tries original, title-cased, and with/without 'The' prefix.
     """
     raw = user_input.strip()
     if not raw:
-        return raw
+        return None, {}
 
     lower = raw.lower()
     title = raw.title()
@@ -754,12 +754,17 @@ def _resolve_artist_name(user_input):
             name = data.get("artist", {}).get("name", "")
             if name:
                 name = _normalize_artist_caps(name)
-                log.info(f"[Resolve] '{raw}' → '{name}' (via '{v}')")
-                return name
+                log.info(f"[Artist Search] '{raw}' → '{name}' (variant: {v})")
+                return name, data
         except Exception:
             continue
 
-    return raw  # fallback: use as-is
+    return None, {}
+
+def _resolve_artist_name(user_input):
+    """Resolve user input to Last.fm canonical name (string only)."""
+    name, _ = _search_artist_flexible(user_input)
+    return name or user_input.strip()
 
 
 def _clean_artist_name(name):
@@ -1573,6 +1578,7 @@ def _get_artist_image(artist):
     _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
     _HEADERS     = {"User-Agent": "Mozilla/5.0"}
     img_url = None
+    lfm_url = ""
 
     def _norm_size(url):
         url = re.sub(r'/\d+x\d+/', '/300x300/', url)
@@ -1602,19 +1608,40 @@ def _get_artist_image(artist):
                 return _norm_size(url)
         return None
 
-    # ── 1) Last.fm page + gallery ──────────────────────────────────────────────
+    # ── 1) Last.fm API images (fast path, deprecated but still works for some) ─
     try:
-        data    = lastfm("artist.getinfo", artist=artist)
-        lfm_url = data.get("artist", {}).get("url", "")
-        if lfm_url:
+        data        = lastfm("artist.getinfo", artist=artist)
+        artist_data = data.get("artist", {})
+        lfm_url     = artist_data.get("url", "")
+        images      = artist_data.get("image", [])
+        for size in ["extralarge", "large", "medium"]:
+            for img in images:
+                if img.get("size") == size and img.get("#text"):
+                    url = img["#text"]
+                    if _PLACEHOLDER not in url:
+                        img_url = url
+                        log.info(f"[Image] API {size} for '{artist}'")
+                        break
+            if img_url:
+                break
+        if not img_url and not lfm_url:
+            log.warning(f"[Image] No API images and no URL for '{artist}'")
+    except Exception as e:
+        log.error(f"Last.fm getinfo for '{artist}': {e}")
+
+    # ── 2) Last.fm page scrape + gallery ──────────────────────────────────────
+    if not img_url and lfm_url:
+        try:
             html    = requests.get(lfm_url, timeout=8, headers=_HEADERS).text
             img_url = _og(html) or _bg(html)
             if not img_url:
                 gallery = requests.get(lfm_url.rstrip("/") + "/+images",
                                        timeout=8, headers=_HEADERS).text
                 img_url = _first_cdn(gallery) or _og(gallery)
-    except Exception as e:
-        log.error(f"Last.fm image lookup for {artist}: {e}")
+            if img_url:
+                log.info(f"[Image] Scraped page for '{artist}'")
+        except Exception as e:
+            log.error(f"Last.fm page scrape for '{artist}': {e}")
 
     # ── 2) Wikipedia fallback ──────────────────────────────────────────────────
     if not img_url:
@@ -3302,7 +3329,16 @@ def map_command(update, context):
             ])
         )
         return
-    artist_query = _resolve_artist_name(" ".join(context.args))
+    artist_query, _ = _search_artist_flexible(" ".join(context.args))
+    if not artist_query:
+        raw = " ".join(context.args)
+        msg.reply_text(
+            f'Artist not found: "{raw}".\nTry a different spelling.',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("← Back", callback_data="cmd|explore_menu")
+            ]])
+        )
+        return
 
     # Delete previous "Mapping…" message if exists
     prev_id = _pending_map_msgs.pop(chat_id, None)
@@ -3428,7 +3464,9 @@ def _render_map(message, artist_query, chat_id):
 
     display_name   = _artist_display_name(info, artist_query)
     canonical_name = info.get("official_name") or artist_query
-    img_bytes      = _get_artist_image(canonical_name)
+    # Use Last.fm canonical name (artist_query) for image — not MusicBrainz name,
+    # since Last.fm page URLs are keyed on the LFM canonical spelling.
+    img_bytes      = _get_artist_image(artist_query)
     has_photo      = img_bytes is not None
 
     map_memory[chat_id] = {
@@ -4256,7 +4294,9 @@ def handle_buttons(update, context):
             _nav_history[chat_id].append(from_artist)
         _nav_history[chat_id] = _nav_history[chat_id][-10:]
 
-        # Just send new card — don't touch the current message
+        # Resolve to Last.fm canonical name before card lookup
+        canonical, _ = _search_artist_flexible(new_artist)
+        new_artist = canonical or new_artist
         _exp_msg = message.reply_text(f"🧑‍🎤 Exploring {new_artist.upper()}…")
         _render_map(message, new_artist, chat_id)
         try:
@@ -4750,7 +4790,15 @@ def handle_text_reply(update, context):
                 msg.bot.delete_message(chat_id=chat_id, message_id=prev_id)
             except Exception:
                 pass
-        artist_query = _resolve_artist_name(text)
+        artist_query, _ = _search_artist_flexible(text)
+        if not artist_query:
+            msg.reply_text(
+                f'Artist not found: "{text}".\nTry a different spelling.',
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("← Back", callback_data="cmd|explore_menu")
+                ]])
+            )
+            return
         mapping_msg = msg.reply_text(f"🧑‍🎤 Exploring {artist_query.upper()}…")
         _pending_map_msgs[chat_id] = mapping_msg.message_id
         sent, timer = _working_message(msg, "🧑‍🎤 Still exploring…")
