@@ -3322,23 +3322,17 @@ def _render_map(message, artist_query, chat_id):
         ).json()
     except Exception as e:
         log.error(f"Discogs error: {e}")
-        message.reply_text("Discogs request failed. Try again.")
-        return
+        data = {}
 
     counter = {}
     for rel in data.get("results", []):
         for s in rel.get("style", []):
             counter[s] = counter.get(s, 0) + 1
 
-    if not counter:
-        message.reply_text(f'No styles found for "{artist_query}".\nTry a different artist or spelling.')
-        return
-
     sorted_styles = sorted(
         [(s, c) for s, c in counter.items() if c >= 5],
         key=lambda x: x[1], reverse=True
     )[:12]
-    # Fallback if too strict
     if not sorted_styles:
         sorted_styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:12]
 
