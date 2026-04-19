@@ -2048,6 +2048,31 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
                  and len(a.split()) >= 1]
     if not seed_pool:
         seed_pool = top_names[:50]
+
+    # Temporal validation: filter seed_pool to artists who began in target decades
+    # (MB rate limiting is handled inside _get_musicbrainz_artist_data via _mb_get)
+    if decades:
+        log.info(f"[Seed Validation] Validating seeds for {decades}")
+        validated_pool = []
+        rejected_seeds = []
+        for artist in seed_pool:
+            is_valid, begin_year, reason = _validate_seed_temporal_coherence(artist, decades)
+            if is_valid:
+                validated_pool.append(artist)
+                log.info(f"[Seed] ✓ '{artist}' - {reason}")
+            else:
+                rejected_seeds.append((artist, begin_year))
+                log.info(f"[Seed] ✗ '{artist}' - {reason}")
+            if len(validated_pool) >= 20:
+                break
+        total_checked = len(validated_pool) + len(rejected_seeds)
+        log.info(f"[Seed Validation] Kept {len(validated_pool)}/{total_checked} checked ({len(rejected_seeds)} rejected)")
+        if rejected_seeds:
+            examples = [f"{n} ({y})" for n, y in rejected_seeds[:5]]
+            log.info(f"[Seed Validation] Rejected: {', '.join(examples)}")
+        if validated_pool:
+            seed_pool = validated_pool
+
     seeds = random.sample(seed_pool, min(5, len(seed_pool)))
     log.info(f"Genre '{genre}' seeds: {seeds}")
 
@@ -2254,7 +2279,8 @@ def _expand_era_pool_dig(seed_artists):
     pool = {a for a in pool if not _is_blacklisted(a)}
     return list(pool) if pool else seed_artists
 
-_mb_decade_cache = {}  # artist_name → set of decades (e.g. {"60s", "70s"})
+_mb_decade_cache = {}       # artist_name → set of decades (e.g. {"60s", "70s"})
+_seed_validation_cache = {}  # (artist.lower(), decades_tuple) → (is_valid, begin_year, reason)
 
 def _artist_decade_from_mb(artist):
     """
@@ -2864,6 +2890,93 @@ def _mb_find_artist(artist_query):
         if candidates and int(candidates[0].get("score", 0)) >= 90:
             return candidates[0].get("id"), candidates[0].get("name")
     return None, None
+
+def _get_musicbrainz_artist_data(artist):
+    """
+    Search MusicBrainz for an artist and return begin_year.
+    Uses the same The-prefix tolerance as _mb_find_artist.
+    Returns dict {"begin_year": int|None, "name": str, "mbid": str} or None.
+    """
+    queries = [artist]
+    al = artist.lower()
+    if al.startswith("the "):
+        queries.append(artist[4:].strip())
+    else:
+        queries.append("The " + artist)
+
+    for q in queries:
+        data = _mb_get("artist/", {"query": f'artist:"{q}"', "limit": 5})
+        candidates = data.get("artists", [])
+        match = None
+        for c in candidates:
+            if int(c.get("score", 0)) >= 80 and \
+               _strip_the(c.get("name", "")) == _strip_the(artist):
+                match = c
+                break
+        if not match and candidates and int(candidates[0].get("score", 0)) >= 90:
+            match = candidates[0]
+        if match:
+            begin_date = (match.get("life-span") or {}).get("begin") or ""
+            begin_year = None
+            if begin_date:
+                try:
+                    begin_year = int(begin_date.split("-")[0])
+                except (ValueError, IndexError):
+                    pass
+            return {"begin_year": begin_year, "name": match.get("name"), "mbid": match.get("id")}
+    return None
+
+
+def _validate_seed_temporal_coherence(artist, target_decades):
+    """
+    Validate that an artist began within the target decades (with 5-year buffer before).
+    Conservative: accepts artist on any error or missing MB data.
+    Returns (is_valid: bool, begin_year: int|None, reason: str).
+    """
+    if not target_decades:
+        return True, None, "no temporal constraint"
+
+    decades_key = tuple(sorted(target_decades))
+    cache_key = (artist.lower(), decades_key)
+    if cache_key in _seed_validation_cache:
+        return _seed_validation_cache[cache_key]
+
+    year_ranges = [DECADE_YEARS[d] for d in target_decades if d in DECADE_YEARS]
+    if not year_ranges:
+        result = (True, None, "no valid decades")
+        _seed_validation_cache[cache_key] = result
+        return result
+
+    min_year = min(r[0] for r in year_ranges) - 5  # 5-year buffer for late bloomers
+    max_year = max(r[1] for r in year_ranges)
+
+    try:
+        mb_data = _get_musicbrainz_artist_data(artist)
+        if not mb_data:
+            result = (True, None, "no MB data (accepted)")
+            _seed_validation_cache[cache_key] = result
+            return result
+
+        begin_year = mb_data.get("begin_year")
+        if not begin_year:
+            result = (True, None, "no begin year (accepted)")
+            _seed_validation_cache[cache_key] = result
+            return result
+
+        if min_year <= begin_year <= max_year:
+            result = (True, begin_year, f"began {begin_year} (valid for {min_year}-{max_year})")
+        else:
+            result = (False, begin_year, f"began {begin_year} (out of {min_year}-{max_year})")
+
+        _seed_validation_cache[cache_key] = result
+        return result
+
+    except Exception as e:
+        log.warning(f"[Seed Validation] Error validating '{artist}': {e}")
+        result = (True, None, f"validation error (accepted): {e}")
+        _seed_validation_cache[cache_key] = result
+        return result
+
 
 def _mb_artist_full(mbid):
     """Full artist lookup with tags and area."""
