@@ -1547,26 +1547,15 @@ def _get_artist_discogs_styles_light(artist):
 
 def _get_artist_primary_tags(artist):
     """
-    Primary tags for display — Discogs first, Last.fm fallback.
-    Returns Title Case strings. Only for display; backend scoring still uses Last.fm.
+    Primary tags for display — ONLY from Discogs (editorial quality).
+    No Last.fm fallback: better to show nothing than inconsistent tags.
+    Returns Title Case strings.
     """
     discogs_styles = _get_artist_discogs_styles_light(artist)
-    if len(discogs_styles) >= 3:
-        return discogs_styles[:3]
-
-    lastfm_tags, _, _ = _get_artist_tags_listeners(artist)
-    # lastfm_tags is a list of normalized strings — title-case for display
-    lastfm_display = [t.title() for t in lastfm_tags]
-
     if discogs_styles:
-        combined, seen = [], set()
-        for tag in discogs_styles + lastfm_display:
-            if tag.lower() not in seen:
-                seen.add(tag.lower())
-                combined.append(tag)
-        return combined[:3]
-
-    return lastfm_display[:3]
+        return discogs_styles[:3]
+    log.warning(f"[Tags-Discogs] No styles found for '{artist}'")
+    return []
 
 
 _artist_image_cache = {}
@@ -2523,13 +2512,13 @@ def _render_similar(query, artist, similar, page, chat_id):
     start       = page * PAGE_SIZE
     page_items  = sorted(similar[start:start + PAGE_SIZE], key=lambda x: len(x))
 
-    # Use card genres from map_memory — same source as the artist card display
-    card_genres = map_memory.get(chat_id, {}).get("info", {}).get("genres", [])
-    if card_genres:
-        top_tags = [g for g in card_genres if not any(c.isdigit() for c in g) and len(g) <= 28][:3]
+    # Use stored Discogs styles from map_memory — single source of truth
+    stored_styles = map_memory.get(chat_id, {}).get("styles", [])
+    if stored_styles:
+        top_tags = [s for s, _ in stored_styles[:3]]
     else:
-        top_tags = _get_artist_primary_tags(artist)  # Discogs-first fallback
-    tags_str  = " · ".join(top_tags) if top_tags else "Various styles"
+        top_tags = _get_artist_primary_tags(artist)  # Discogs-only fallback
+    tags_str = " · ".join(top_tags) if top_tags else "Various styles"
     total_artists = len(similar)
 
     buttons = []
@@ -3445,22 +3434,9 @@ def _render_map(message, artist_query, chat_id):
         log.info(f"Saved {tags_added} Discogs styles from artist card for '{artist_query}'")
 
     info = _get_artist_full_info(artist_query)
-    log.info(f"[Card] '{artist_query}': discogs_styles={sorted_styles[:3]}, mb_country={info.get('country_code')}, genres={info.get('genres')}, begin={info.get('begin_year')}")
-    # Discogs styles (count-weighted) are more reliable than MusicBrainz tags — always prefer them
-    if sorted_styles:
-        info["genres"] = [s for s, _ in sorted_styles[:3]]
-    # Last resort: if still no genres, pull Last.fm tags directly
-    if not info.get("genres"):
-        try:
-            lfm = lastfm("artist.getinfo", artist=info.get("official_name") or artist_query)
-            lfm_tags = lfm.get("artist", {}).get("tags", {}).get("tag", [])
-            info["genres"] = [
-                t["name"].title() for t in lfm_tags
-                if not any(c.isdigit() for c in t["name"]) and len(t["name"]) <= 28
-            ][:4]
-            log.info(f"[Card] Last.fm fallback genres for '{artist_query}': {info['genres']}")
-        except Exception as e:
-            log.error(f"[Card] Last.fm genre fallback: {e}")
+    log.info(f"[Card] '{artist_query}': discogs_styles={sorted_styles[:3]}, mb_country={info.get('country_code')}, begin={info.get('begin_year')}")
+    # Use ONLY Discogs styles as genres — single source of truth
+    info["genres"] = [s for s, _ in sorted_styles[:3]] if sorted_styles else []
 
     display_name   = _artist_display_name(info, artist_query)
     canonical_name = info.get("official_name") or artist_query
