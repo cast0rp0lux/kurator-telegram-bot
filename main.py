@@ -651,23 +651,34 @@ def save_tag_blacklist():
 def save_map_memory():
     _mongo_set("store", MAP_FILE, {str(k): v for k, v in map_memory.items()})
 
-def _migrate_tag_index_to_discogs():
+def _migrate_tag_index_to_new_structure():
+    """
+    Migrate tag_index to normalized structure with deduplication.
+    Old: {"Italo-Disco": 45, "Italo Disco": 23}
+    New: {"italo-disco": {"count": 68, "display": "Italo-Disco"}}
+    Idempotent — safe to call multiple times.
+    """
     global tag_index
     if not tag_index:
         return
-    if any(tag[0].isupper() for tag in tag_index.keys()):
-        log.info("tag_index already migrated to Discogs format")
+    first_val = next(iter(tag_index.values()))
+    if isinstance(first_val, dict) and "count" in first_val:
+        log.info("[Tag Index] Already using new structure ✓")
         return
-    log.info("Migrating tag_index to Discogs capitalization...")
-    migrated = {}
-    for tag, count in tag_index.items():
-        discogs_style = tag.strip().title()
-        migrated[discogs_style] = migrated.get(discogs_style, 0) + count
-    tag_index = migrated
+    log.info("[Tag Index] Migrating to normalized structure...")
+    old_index = tag_index.copy()
+    tag_index = {}
+    for tag, count in old_index.items():
+        normalized = normalize_tag_for_index(tag)
+        if normalized in tag_index:
+            tag_index[normalized]["count"] += count
+        else:
+            tag_index[normalized] = {"count": count, "display": tag}
+    deduped = len(old_index) - len(tag_index)
+    log.info(f"[Tag Index] Migration complete: {len(old_index)} → {len(tag_index)} tags ({deduped} duplicates merged)")
     save_tag_index()
-    log.info(f"Migrated {len(tag_index)} tags to Discogs format")
 
-_migrate_tag_index_to_discogs()
+_migrate_tag_index_to_new_structure()
 
 # ─── URL helpers ──────────────────────────────────────────────────────────────
 
@@ -1419,6 +1430,79 @@ def normalize_tag_extended(tag):
     compact = base.replace(" ", "")
     return base, compact
 
+def normalize_tag_for_index(tag):
+    """Normalize tag to a consistent key for deduplication (lowercase, spaces→hyphens)."""
+    if not tag:
+        return ""
+    n = tag.lower().strip().replace(" ", "-")
+    while "--" in n:
+        n = n.replace("--", "-")
+    return n.strip("-")
+
+def _is_tag_useful_for_playlists(tag):
+    """Return True if Last.fm has ≥3 artists for this tag (playlist-viable)."""
+    try:
+        result  = lastfm("tag.gettopartists", tag=tag, limit=5)
+        artists = result.get("topartists", {}).get("artist", [])
+        count   = len(artists) if isinstance(artists, list) else 0
+        if count >= 3:
+            log.info(f"[Tag Validation] '{tag}' → {count} artists ✓")
+            return True
+        log.info(f"[Tag Validation] '{tag}' → {count} artists ✗ too specific")
+        return False
+    except Exception as e:
+        log.warning(f"[Tag Validation] '{tag}' error: {e}")
+        return False
+
+def _add_tag_to_index(tag_display, count=1):
+    """Add/update tag in index using normalized key for deduplication."""
+    global tag_index
+    normalized = normalize_tag_for_index(tag_display)
+    if not normalized:
+        return
+    if normalized in tag_index:
+        tag_index[normalized]["count"] += count
+    else:
+        tag_index[normalized] = {"count": count, "display": tag_display}
+
+def _get_all_tags_sorted():
+    """Return [(display_name, count), ...] sorted by count descending."""
+    return sorted(
+        [(data["display"], data["count"]) for data in tag_index.values()],
+        key=lambda x: x[1], reverse=True
+    )
+
+def _find_tag_display_name(query):
+    """Case-insensitive lookup: return display name for user query, or None."""
+    key = normalize_tag_for_index(query)
+    entry = tag_index.get(key)
+    return entry["display"] if entry else None
+
+def _cleanup_invalid_tags():
+    """Remove tags that Last.fm can't use for playlists (< 3 artists). Runs in background."""
+    import time as _time
+    global tag_index
+    if not tag_index:
+        return
+    log.info("[Tag Cleanup] Validating tags against Last.fm...")
+    invalid = []
+    for normalized, data in list(tag_index.items()):
+        _time.sleep(0.3)  # gentle rate-limit
+        if not _is_tag_useful_for_playlists(data["display"]):
+            invalid.append(normalized)
+    for key in invalid:
+        entry = tag_index.pop(key, None)
+        if entry:
+            log.info(f"[Tag Cleanup] Removed '{entry['display']}' ({entry['count']}) — not playlist-viable")
+    if invalid:
+        save_tag_index()
+        log.info(f"[Tag Cleanup] Removed {len(invalid)} invalid tags")
+    else:
+        log.info("[Tag Cleanup] All tags valid ✓")
+
+# Run cleanup in background so startup is not blocked
+threading.Thread(target=_cleanup_invalid_tags, daemon=True).start()
+
 _artist_listeners_cache = {}  # artist → listener count
 _artist_tags_cache = {}       # artist → (normalized_tags, compact_tags)
 _artist_tags_compact_cache = {}  # artist → compact tags
@@ -1685,42 +1769,59 @@ def _edit_card_message(query, chat_id, text, markup):
     query.edit_message_text(text, reply_markup=markup)
 
 
+_STYLE_BLACKLIST = {
+    "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
+    "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
+    "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
+    "Non-Music", "Brass & Military", "Folk, World, & Country",
+    "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
+    "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
+    "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
+    "Comedy", "Novelty", "Parody", "Education", "Radioplay",
+    "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
+    "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
+    "Experimental", "Ambient", "Noise",
+}
+
 def _discover_and_add_styles(artists):
-    global tag_index
-    STYLE_BLACKLIST = {
-        "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
-        "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
-        "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
-        "Non-Music", "Brass & Military", "Folk, World, & Country",
-        "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
-        "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
-        "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
-        "Comedy", "Novelty", "Parody", "Education", "Radioplay",
-        "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
-        "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
-        "Experimental", "Ambient", "Noise",
-    }
-    sample = artists[:min(10, len(artists))]
-    new_styles_added = 0
+    """
+    Auto-discover Discogs styles from playlist artists.
+    - Validates new tags against Last.fm before adding
+    - Caps at MAX_NEW_TAGS=10 new entries per call
+    - Existing tags just get count incremented (no re-validation)
+    """
+    MAX_NEW_TAGS = 10
+    from collections import Counter
+    sample      = artists[:min(10, len(artists))]
+    all_styles  = []
     for artist in sample:
-        styles = _get_artist_discogs_styles_light(artist)
-        for style in styles:
-            if len(style) <= 4:
-                continue
-            if style in STYLE_BLACKLIST:
-                continue
-            if "," in style or "&" in style:
-                continue
-            if any(word in style.lower() for word in ["music", "various", "compilation", "mix"]):
-                continue
-            if style not in tag_index:
-                tag_index[style] = 1
-                new_styles_added += 1
+        all_styles.extend(_get_artist_discogs_styles_light(artist))
+    if not all_styles:
+        return
+    new_tags_added = 0
+    for style, freq in Counter(all_styles).most_common():
+        if new_tags_added >= MAX_NEW_TAGS:
+            break
+        if len(style) <= 4 or style in _STYLE_BLACKLIST:
+            continue
+        if "," in style or "&" in style:
+            continue
+        if any(w in style.lower() for w in ["music", "various", "compilation", "mix"]):
+            continue
+        normalized = normalize_tag_for_index(style)
+        if normalized in tag_index:
+            tag_index[normalized]["count"] += freq
+        else:
+            if _is_tag_useful_for_playlists(style):
+                tag_index[normalized] = {"count": freq, "display": style}
+                new_tags_added += 1
+                log.info(f"[Tag Discovery] Added '{style}' (freq: {freq}) ✓")
             else:
-                tag_index[style] = tag_index.get(style, 0) + 1
-    if new_styles_added > 0:
+                log.info(f"[Tag Discovery] Rejected '{style}' — not playlist-viable ✗")
+    if new_tags_added > 0 or all_styles:
         save_tag_index()
-        log.info(f"Auto-discovered {new_styles_added} new styles filtered")
+        if new_tags_added:
+            log.info(f"[Tag Discovery] Added {new_tags_added} new validated tags")
 
 def _artist_matches_genre(artist, valid_genres):
     """Return True if artist tags don't contain incompatible genres."""
@@ -3403,31 +3504,16 @@ def _render_map(message, artist_query, chat_id):
         log.info(f"[Discogs] No styles for '{artist_query}', retrying as '{fallback_name}'")
         counter, sorted_styles = _discogs_styles(fallback_name)
 
-    # Save filtered Discogs styles to tag_index (same blacklist as _discover_and_add_styles)
-    _RENDER_MAP_STYLE_BLACKLIST = {
-        "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
-        "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
-        "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
-        "Non-Music", "Brass & Military", "Folk, World, & Country",
-        "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
-        "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
-        "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
-        "Comedy", "Novelty", "Parody", "Education", "Radioplay",
-        "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
-        "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
-        "Experimental", "Ambient", "Noise",
-    }
+    # Save filtered Discogs styles to tag_index using module-level blacklist
     tags_added = 0
     for style, count in sorted_styles:
-        if len(style) <= 4:
-            continue
-        if style in _RENDER_MAP_STYLE_BLACKLIST:
+        if len(style) <= 4 or style in _STYLE_BLACKLIST:
             continue
         if "," in style or "&" in style:
             continue
         if any(w in style.lower() for w in ["music", "various", "compilation", "mix"]):
             continue
-        tag_index[style] = tag_index.get(style, 0) + count
+        _add_tag_to_index(style, count)
         tags_added += 1
     if tags_added:
         save_tag_index()
@@ -3640,7 +3726,7 @@ def _render_tags(message, page=0, edit_mode=False, chat_id=None):
             "— /genre — play a genre playlist"
         )
         return
-    all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+    all_tags    = _get_all_tags_sorted()
     sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
     total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
     mode_label  = "  ✏️ Edit mode" if edit_mode else ""
@@ -3787,7 +3873,7 @@ def handle_buttons(update, context):
             _render_tags(message, page=0)
 
         elif value == "status":
-            visible = [(t, c) for t, c in tag_index.items() if _is_valid_tag(t)]
+            visible = [(t, c) for t, c in _get_all_tags_sorted() if _is_valid_tag(t)]
             hidden  = len(tag_blacklist)
             query.edit_message_text(
                 f"📊 Status\n\n"
@@ -4443,7 +4529,7 @@ def handle_buttons(update, context):
         # Clear pending state when leaving edit mode
         _pending_tag_deletes.pop(chat_id, None)
         _pending_tag_restores.pop(chat_id, None)
-        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+        all_tags    = _get_all_tags_sorted()
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         query.edit_message_text(
@@ -4453,7 +4539,7 @@ def handle_buttons(update, context):
 
     elif action == "tags_edit":
         page        = int(value)
-        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+        all_tags    = _get_all_tags_sorted()
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         query.edit_message_text(
@@ -4471,7 +4557,7 @@ def handle_buttons(update, context):
             sel.discard(tag)
         else:
             sel.add(tag)
-        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+        all_tags    = _get_all_tags_sorted()
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         query.edit_message_text(
@@ -4500,12 +4586,12 @@ def handle_buttons(update, context):
         page   = int(value) if value else 0
         to_del = _pending_tag_deletes.pop(chat_id, set())
         for tag in to_del:
-            tag_index.pop(tag, None)
+            tag_index.pop(normalize_tag_for_index(tag), None)
             tag_blacklist.add(tag.lower())
         if to_del:
             save_tag_index()
             save_tag_blacklist()
-        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+        all_tags    = _get_all_tags_sorted()
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         if not sorted_tags:
             query.edit_message_text("Tag collection is empty.\n\nUse /artist <name> to explore an artist and start collecting genres.",
