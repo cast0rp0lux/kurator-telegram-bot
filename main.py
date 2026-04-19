@@ -21,10 +21,61 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.8.3)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.2)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.2": {
+        "date": "2026-04-18",
+        "changes": [
+            "Avatar circular del artista: recorte circular con fondo oscuro via PIL",
+            "Eliminado texto 'Explore:' del caption de la tarjeta",
+        ],
+        "technical": [
+            "_get_artist_image: scrape og:image → PIL circular crop (300x300, bg #17212b)",
+            "_render_map: reply_photo con BytesIO(img_bytes), caption sin 'Explore:'",
+            "Pillow añadido a requirements.txt",
+        ]
+    },
+    "6.9.0": {
+        "date": "2026-04-18",
+        "changes": [
+            "Artist card muestra foto de Last.fm como imagen principal",
+            "Navegación (Similar, Styles, Bio, Albums, Back) adaptada a mensajes foto",
+        ],
+        "technical": [
+            "_get_artist_image(artist): Last.fm extralarge/large, filtra placeholder",
+            "_edit_card_message(query, chat_id, text, markup): caption si has_photo, text si no",
+            "_render_map: reply_photo cuando hay imagen, fallback a reply_text",
+            "map_bio/map_albums/map_similar/map_styles/card_back/_render_similar → _edit_card_message",
+        ]
+    },
+    "6.8.5": {
+        "date": "2026-04-18",
+        "changes": [
+            "Soundiiz: botón URL '→ soundiiz.com' abre navegador directamente",
+            "Soundiiz: instrucciones simplificadas a 5 pasos concisos",
+            "/cancel: símbolo ■ en vez de ⏹"
+        ],
+        "technical": [
+            "soundiiz_help: msg.edit_reply_markup añade InlineKeyboardButton(url='https://soundiiz.com')",
+            "cancel_command: '⏹ Generation stopped.' → '■ Generation stopped.'"
+        ]
+    },
+    "6.8.4": {
+        "date": "2026-04-18",
+        "changes": [
+            "Sistema de scoring MVP (3 capas) para filtrar contaminación moderna en géneros históricos",
+            "Reemplaza temporal concentration logic: scoring aplica a TODO el rango temporal",
+            "Tracks 2010+ cerca del cluster pasan (score 70); tracks 2010+ lejos del cluster fallan (score 30)"
+        ],
+        "technical": [
+            "Constante SCORE_THRESHOLD = 50",
+            "_calculate_track_score(track, year, median, genre): base 60 + temporal 0-40 - penalty 30 si ≥2010",
+            "All Time handler: calcula pool_median_year, aplica _calculate_track_score a cada track",
+            "Sin año → score 80 (benefit of doubt, pasa); lejos+moderno → score 30 (falla)"
+        ]
+    },
     "6.8.3": {
         "date": "2026-04-18",
         "changes": [
@@ -388,6 +439,7 @@ RARE_MAX_LISTENERS             = 500_000
 SINGLES_FALLBACK_LISTENER_CAP  = 1_000_000  # only artists below this get the singles/EPs fallback
 RARE_CANDIDATE_CAP  = 150
 TAGS_PAGE_SIZE      = 10
+SCORE_THRESHOLD     = 50  # minimum score for track inclusion (0-100)
 CALLBACK_DATA_MAX   = 60
 TRACK_STORE_MAX     = 20
 TRACK_FETCH_LIMIT   = 50
@@ -599,23 +651,34 @@ def save_tag_blacklist():
 def save_map_memory():
     _mongo_set("store", MAP_FILE, {str(k): v for k, v in map_memory.items()})
 
-def _migrate_tag_index_to_discogs():
+def _migrate_tag_index_to_new_structure():
+    """
+    Migrate tag_index to normalized structure with deduplication.
+    Old: {"Italo-Disco": 45, "Italo Disco": 23}
+    New: {"italo-disco": {"count": 68, "display": "Italo-Disco"}}
+    Idempotent — safe to call multiple times.
+    """
     global tag_index
     if not tag_index:
         return
-    if any(tag[0].isupper() for tag in tag_index.keys()):
-        log.info("tag_index already migrated to Discogs format")
+    first_val = next(iter(tag_index.values()))
+    if isinstance(first_val, dict) and "count" in first_val:
+        log.info("[Tag Index] Already using new structure ✓")
         return
-    log.info("Migrating tag_index to Discogs capitalization...")
-    migrated = {}
-    for tag, count in tag_index.items():
-        discogs_style = tag.strip().title()
-        migrated[discogs_style] = migrated.get(discogs_style, 0) + count
-    tag_index = migrated
+    log.info("[Tag Index] Migrating to normalized structure...")
+    old_index = tag_index.copy()
+    tag_index = {}
+    for tag, count in old_index.items():
+        normalized = normalize_tag_for_index(tag)
+        if normalized in tag_index:
+            tag_index[normalized]["count"] += count
+        else:
+            tag_index[normalized] = {"count": count, "display": tag}
+    deduped = len(old_index) - len(tag_index)
+    log.info(f"[Tag Index] Migration complete: {len(old_index)} → {len(tag_index)} tags ({deduped} duplicates merged)")
     save_tag_index()
-    log.info(f"Migrated {len(tag_index)} tags to Discogs format")
 
-_migrate_tag_index_to_discogs()
+_migrate_tag_index_to_new_structure()
 
 # ─── URL helpers ──────────────────────────────────────────────────────────────
 
@@ -651,12 +714,76 @@ def normalize_artist(name):
     n = re.sub(r'\s*with\s+.*$', '', n).strip()
     return n
 
+_MINOR_WORDS = {
+    "a", "an", "the", "and", "but", "or", "nor", "for", "so", "yet",
+    "at", "by", "from", "in", "into", "of", "off", "on", "onto", "out",
+    "over", "per", "to", "up", "via", "with",
+}
+
+def _normalize_artist_caps(name):
+    """Title-case with standard minor-word rules (Chicago style)."""
+    words = name.split()
+    result = []
+    for i, w in enumerate(words):
+        if i == 0 or w.lower() not in _MINOR_WORDS:
+            result.append(w.capitalize())
+        else:
+            result.append(w.lower())
+    return " ".join(result)
+
+def _search_artist_flexible(user_input):
+    """
+    Find canonical Last.fm name for an artist.
+    Returns (canonical_name, lastfm_data) or (None, {}) if not found.
+    Tries original, title-cased, and with/without 'The' prefix.
+    """
+    raw = user_input.strip()
+    if not raw:
+        return None, {}
+
+    lower = raw.lower()
+    title = raw.title()
+
+    variants = []
+    for v in [raw, title]:
+        if v not in variants:
+            variants.append(v)
+    if lower.startswith("the "):
+        without = raw[4:].strip().title()
+        if without not in variants:
+            variants.append(without)
+    else:
+        with_the = "The " + title
+        if with_the not in variants:
+            variants.append(with_the)
+
+    for v in variants:
+        try:
+            data = lastfm("artist.getinfo", artist=v)
+            if data.get("error"):
+                continue
+            name = data.get("artist", {}).get("name", "")
+            if name:
+                name = _normalize_artist_caps(name)
+                log.info(f"[Artist Search] '{raw}' → '{name}' (variant: {v})")
+                return name, data
+        except Exception:
+            continue
+
+    return None, {}
+
+def _resolve_artist_name(user_input):
+    """Resolve user input to Last.fm canonical name (string only)."""
+    name, _ = _search_artist_flexible(user_input)
+    return name or user_input.strip()
+
+
 def _clean_artist_name(name):
     """
     Clean Discogs-style artist names:
-    - Remove asterisks: 'Tony Williams*' → 'Tony Williams'
-    - Remove disambiguation numbers: 'Solution (4)' → 'Solution'
-    - Fix broken UTF-8 encoding: 'WuyÃ©' → 'Wuyé'
+    - Remove asterisks: 'Tony Williams*' -> 'Tony Williams'
+    - Remove disambiguation numbers: 'Solution (4)' -> 'Solution'
+    - Fix broken UTF-8 encoding: 'WuyAe' -> 'Wuye'
     """
     import re
     # Fix broken UTF-8 (latin1 misread as utf-8)
@@ -973,6 +1100,33 @@ def select_tracks(artists, size=None, skip_recent=True):
     _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
     return tracks
 
+
+def _calculate_track_score(track, track_year, pool_median_year, genre=None):
+    """
+    3-layer scoring (0-100) for track authenticity in historical genre playlists.
+    Layer 1 — Temporal Context  (0-40 pts): proximity to pool median year
+    Layer 2 — Contamination     (-30 pts):  penalty for modern revivals (≥2010)
+    Layer 3 — Genre Identity    (60 pts):   base score, expandable in future
+    Threshold: SCORE_THRESHOLD (50).  Tracks without year data score 80 (pass).
+    """
+    score = 60  # base
+
+    if track_year and pool_median_year:
+        dist = abs(track_year - pool_median_year)
+        if   dist <=  5: score += 40
+        elif dist <= 10: score += 30
+        elif dist <= 15: score += 20
+        elif dist <= 25: score += 10
+        # >25 years from median: 0 temporal points
+    else:
+        score += 20  # no year data — moderate benefit of doubt
+
+    if track_year and track_year >= 2010:
+        score -= 30  # modern revival / remake penalty
+
+    return max(0, min(100, score))
+
+
 # ─── Era-based artist pool — Discogs approach ────────────────────────────────
 
 # Artists to always exclude
@@ -1276,6 +1430,79 @@ def normalize_tag_extended(tag):
     compact = base.replace(" ", "")
     return base, compact
 
+def normalize_tag_for_index(tag):
+    """Normalize tag to a consistent key for deduplication (lowercase, spaces→hyphens)."""
+    if not tag:
+        return ""
+    n = tag.lower().strip().replace(" ", "-")
+    while "--" in n:
+        n = n.replace("--", "-")
+    return n.strip("-")
+
+def _is_tag_useful_for_playlists(tag):
+    """Return True if Last.fm has ≥3 artists for this tag (playlist-viable)."""
+    try:
+        result  = lastfm("tag.gettopartists", tag=tag, limit=5)
+        artists = result.get("topartists", {}).get("artist", [])
+        count   = len(artists) if isinstance(artists, list) else 0
+        if count >= 3:
+            log.info(f"[Tag Validation] '{tag}' → {count} artists ✓")
+            return True
+        log.info(f"[Tag Validation] '{tag}' → {count} artists ✗ too specific")
+        return False
+    except Exception as e:
+        log.warning(f"[Tag Validation] '{tag}' error: {e}")
+        return False
+
+def _add_tag_to_index(tag_display, count=1):
+    """Add/update tag in index using normalized key for deduplication."""
+    global tag_index
+    normalized = normalize_tag_for_index(tag_display)
+    if not normalized:
+        return
+    if normalized in tag_index:
+        tag_index[normalized]["count"] += count
+    else:
+        tag_index[normalized] = {"count": count, "display": tag_display}
+
+def _get_all_tags_sorted():
+    """Return [(display_name, count), ...] sorted by count descending."""
+    return sorted(
+        [(data["display"], data["count"]) for data in tag_index.values()],
+        key=lambda x: x[1], reverse=True
+    )
+
+def _find_tag_display_name(query):
+    """Case-insensitive lookup: return display name for user query, or None."""
+    key = normalize_tag_for_index(query)
+    entry = tag_index.get(key)
+    return entry["display"] if entry else None
+
+def _cleanup_invalid_tags():
+    """Remove tags that Last.fm can't use for playlists (< 3 artists). Runs in background."""
+    import time as _time
+    global tag_index
+    if not tag_index:
+        return
+    log.info("[Tag Cleanup] Validating tags against Last.fm...")
+    invalid = []
+    for normalized, data in list(tag_index.items()):
+        _time.sleep(0.3)  # gentle rate-limit
+        if not _is_tag_useful_for_playlists(data["display"]):
+            invalid.append(normalized)
+    for key in invalid:
+        entry = tag_index.pop(key, None)
+        if entry:
+            log.info(f"[Tag Cleanup] Removed '{entry['display']}' ({entry['count']}) — not playlist-viable")
+    if invalid:
+        save_tag_index()
+        log.info(f"[Tag Cleanup] Removed {len(invalid)} invalid tags")
+    else:
+        log.info("[Tag Cleanup] All tags valid ✓")
+
+# Run cleanup in background so startup is not blocked
+threading.Thread(target=_cleanup_invalid_tags, daemon=True).start()
+
 _artist_listeners_cache = {}  # artist → listener count
 _artist_tags_cache = {}       # artist → (normalized_tags, compact_tags)
 _artist_tags_compact_cache = {}  # artist → compact tags
@@ -1404,64 +1631,197 @@ def _get_artist_discogs_styles_light(artist):
 
 def _get_artist_primary_tags(artist):
     """
-    Primary tags for display — Discogs first, Last.fm fallback.
-    Returns Title Case strings. Only for display; backend scoring still uses Last.fm.
+    Primary tags for display — ONLY from Discogs (editorial quality).
+    No Last.fm fallback: better to show nothing than inconsistent tags.
+    Returns Title Case strings.
     """
     discogs_styles = _get_artist_discogs_styles_light(artist)
-    if len(discogs_styles) >= 3:
-        return discogs_styles[:3]
-
-    lastfm_tags, _, _ = _get_artist_tags_listeners(artist)
-    # lastfm_tags is a list of normalized strings — title-case for display
-    lastfm_display = [t.title() for t in lastfm_tags]
-
     if discogs_styles:
-        combined, seen = [], set()
-        for tag in discogs_styles + lastfm_display:
-            if tag.lower() not in seen:
-                seen.add(tag.lower())
-                combined.append(tag)
-        return combined[:3]
+        return discogs_styles[:3]
+    log.warning(f"[Tags-Discogs] No styles found for '{artist}'")
+    return []
 
-    return lastfm_display[:3]
 
+_artist_image_cache = {}
+
+def _get_artist_image(artist):
+    """Return artist photo as square 600×600 JPEG bytes, or None."""
+    if artist in _artist_image_cache:
+        return _artist_image_cache[artist]
+    _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
+    _HEADERS     = {"User-Agent": "Mozilla/5.0"}
+    img_url = None
+    lfm_url = ""
+
+    def _norm_size(url):
+        url = re.sub(r'/\d+x\d+/', '/300x300/', url)
+        url = re.sub(r'/\d+s/',    '/300x300/', url)
+        return url
+
+    def _og(html):
+        for pat in [
+            r'<meta property="og:image"\s+content="([^"]+)"',
+            r'<meta content="([^"]+)"\s+property="og:image"',
+        ]:
+            m = re.search(pat, html)
+            if m and _PLACEHOLDER not in m.group(1):
+                return m.group(1)
+        return None
+
+    def _bg(html):
+        m = re.search(r'background-image:\s*url\([\'"]?(https://[^\'\")<>]+)[\'"]?\)', html)
+        if m and _PLACEHOLDER not in m.group(1):
+            return _norm_size(m.group(1))
+        return None
+
+    def _first_cdn(html):
+        for m in re.finditer(r'https://lastfm\.freetls\.fastly\.net/i/u/[^\s"\'<>\\]+', html):
+            url = m.group(0).replace("\\/", "/").split("?")[0].rstrip(".,;")
+            if _PLACEHOLDER not in url and re.search(r'\.(jpg|jpeg|png)$', url, re.I):
+                return _norm_size(url)
+        return None
+
+    # ── 1) Last.fm API images (fast path, deprecated but still works for some) ─
+    try:
+        data        = lastfm("artist.getinfo", artist=artist)
+        artist_data = data.get("artist", {})
+        lfm_url     = artist_data.get("url", "")
+        images      = artist_data.get("image", [])
+        for size in ["extralarge", "large", "medium"]:
+            for img in images:
+                if img.get("size") == size and img.get("#text"):
+                    url = img["#text"]
+                    if _PLACEHOLDER not in url:
+                        img_url = url
+                        log.info(f"[Image] API {size} for '{artist}'")
+                        break
+            if img_url:
+                break
+        if not img_url and not lfm_url:
+            log.warning(f"[Image] No API images and no URL for '{artist}'")
+    except Exception as e:
+        log.error(f"Last.fm getinfo for '{artist}': {e}")
+
+    # ── 2) Last.fm page scrape + gallery ──────────────────────────────────────
+    if not img_url and lfm_url:
+        try:
+            html    = requests.get(lfm_url, timeout=8, headers=_HEADERS).text
+            img_url = _og(html) or _bg(html)
+            if not img_url:
+                gallery = requests.get(lfm_url.rstrip("/") + "/+images",
+                                       timeout=8, headers=_HEADERS).text
+                img_url = _first_cdn(gallery) or _og(gallery)
+            if img_url:
+                log.info(f"[Image] Scraped page for '{artist}'")
+        except Exception as e:
+            log.error(f"Last.fm page scrape for '{artist}': {e}")
+
+    # ── 2) Wikipedia fallback ──────────────────────────────────────────────────
+    if not img_url:
+        try:
+            wp = requests.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={"action": "query", "titles": artist,
+                        "prop": "pageimages", "format": "json", "pithumbsize": 600},
+                timeout=5, headers=_HEADERS
+            ).json()
+            for page in wp.get("query", {}).get("pages", {}).values():
+                src = page.get("thumbnail", {}).get("source")
+                if src:
+                    img_url = src
+                    break
+        except Exception as e:
+            log.error(f"Wikipedia image for {artist}: {e}")
+
+    if not img_url:
+        _artist_image_cache[artist] = None
+        return None
+
+    try:
+        from PIL import Image
+        import io as _io
+        raw = requests.get(img_url, timeout=8, headers=_HEADERS).content
+        img = Image.open(_io.BytesIO(raw)).convert("RGB")
+        w, h = img.size
+        sq = min(w, h)
+        img = img.crop(((w - sq) // 2, (h - sq) // 2, (w + sq) // 2, (h + sq) // 2))
+        img = img.resize((600, 600), Image.LANCZOS)
+        buf = _io.BytesIO()
+        img.save(buf, "JPEG", quality=88)
+        result = buf.getvalue()
+        _artist_image_cache[artist] = result
+        return result
+    except Exception as e:
+        log.error(f"Image processing for {artist}: {e}")
+        _artist_image_cache[artist] = None
+        return None
+
+
+def _edit_card_message(query, chat_id, text, markup):
+    """Edit a card message: caption edit for photo cards, text edit otherwise."""
+    if map_memory.get(chat_id, {}).get("has_photo"):
+        try:
+            query.edit_message_caption(caption=text, reply_markup=markup)
+            return
+        except Exception:
+            if chat_id in map_memory:
+                map_memory[chat_id]["has_photo"] = False
+    query.edit_message_text(text, reply_markup=markup)
+
+
+_STYLE_BLACKLIST = {
+    "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
+    "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
+    "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
+    "Non-Music", "Brass & Military", "Folk, World, & Country",
+    "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
+    "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
+    "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
+    "Comedy", "Novelty", "Parody", "Education", "Radioplay",
+    "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
+    "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
+    "Experimental", "Ambient", "Noise",
+}
 
 def _discover_and_add_styles(artists):
-    global tag_index
-    STYLE_BLACKLIST = {
-        "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
-        "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
-        "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
-        "Non-Music", "Brass & Military", "Folk, World, & Country",
-        "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
-        "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
-        "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
-        "Comedy", "Novelty", "Parody", "Education", "Radioplay",
-        "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
-        "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
-        "Experimental", "Ambient", "Noise",
-    }
-    sample = artists[:min(10, len(artists))]
-    new_styles_added = 0
+    """
+    Auto-discover Discogs styles from playlist artists.
+    - Validates new tags against Last.fm before adding
+    - Caps at MAX_NEW_TAGS=10 new entries per call
+    - Existing tags just get count incremented (no re-validation)
+    """
+    MAX_NEW_TAGS = 10
+    from collections import Counter
+    sample      = artists[:min(10, len(artists))]
+    all_styles  = []
     for artist in sample:
-        styles = _get_artist_discogs_styles_light(artist)
-        for style in styles:
-            if len(style) <= 4:
-                continue
-            if style in STYLE_BLACKLIST:
-                continue
-            if "," in style or "&" in style:
-                continue
-            if any(word in style.lower() for word in ["music", "various", "compilation", "mix"]):
-                continue
-            if style not in tag_index:
-                tag_index[style] = 1
-                new_styles_added += 1
+        all_styles.extend(_get_artist_discogs_styles_light(artist))
+    if not all_styles:
+        return
+    new_tags_added = 0
+    for style, freq in Counter(all_styles).most_common():
+        if new_tags_added >= MAX_NEW_TAGS:
+            break
+        if len(style) <= 4 or style in _STYLE_BLACKLIST:
+            continue
+        if "," in style or "&" in style:
+            continue
+        if any(w in style.lower() for w in ["music", "various", "compilation", "mix"]):
+            continue
+        normalized = normalize_tag_for_index(style)
+        if normalized in tag_index:
+            tag_index[normalized]["count"] += freq
+        else:
+            if _is_tag_useful_for_playlists(style):
+                tag_index[normalized] = {"count": freq, "display": style}
+                new_tags_added += 1
+                log.info(f"[Tag Discovery] Added '{style}' (freq: {freq}) ✓")
             else:
-                tag_index[style] = tag_index.get(style, 0) + 1
-    if new_styles_added > 0:
+                log.info(f"[Tag Discovery] Rejected '{style}' — not playlist-viable ✗")
+    if new_tags_added > 0 or all_styles:
         save_tag_index()
-        log.info(f"Auto-discovered {new_styles_added} new styles filtered")
+        if new_tags_added:
+            log.info(f"[Tag Discovery] Added {new_tags_added} new validated tags")
 
 def _artist_matches_genre(artist, valid_genres):
     """Return True if artist tags don't contain incompatible genres."""
@@ -2253,13 +2613,13 @@ def _render_similar(query, artist, similar, page, chat_id):
     start       = page * PAGE_SIZE
     page_items  = sorted(similar[start:start + PAGE_SIZE], key=lambda x: len(x))
 
-    # Use card genres from map_memory — same source as the artist card display
-    card_genres = map_memory.get(chat_id, {}).get("info", {}).get("genres", [])
-    if card_genres:
-        top_tags = [g for g in card_genres if not any(c.isdigit() for c in g) and len(g) <= 28][:3]
+    # Use stored Discogs styles from map_memory — single source of truth
+    stored_styles = map_memory.get(chat_id, {}).get("styles", [])
+    if stored_styles:
+        top_tags = [s for s, _ in stored_styles[:3]]
     else:
-        top_tags = _get_artist_primary_tags(artist)  # Discogs-first fallback
-    tags_str  = " · ".join(top_tags) if top_tags else "Various styles"
+        top_tags = _get_artist_primary_tags(artist)  # Discogs-only fallback
+    tags_str = " · ".join(top_tags) if top_tags else "Various styles"
     total_artists = len(similar)
 
     buttons = []
@@ -2292,7 +2652,7 @@ def _render_similar(query, artist, similar, page, chat_id):
     text  = f"🔗 Similar to {artist}\n"
     text += f"🏷️ {tags_str}\n\n"
     text += f"{total_artists} artists from the same scene{page_label}"
-    query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    _edit_card_message(query, chat_id, text, InlineKeyboardMarkup(buttons))
 
 # ─── Working message — appears at 8s if still generating ─────────────────────
 
@@ -2478,19 +2838,31 @@ def _get_user_genre_profile(chat_id):
         return {"genres": [], "decades": []}
 
 
+def _strip_the(s):
+    l = s.lower()
+    return l[4:] if l.startswith("the ") else l
+
 def _mb_find_artist(artist_query):
     """
     Search MusicBrainz for an artist. Returns (mbid, official_name) or (None, None).
-    Tries exact name match first, then falls back to top result with score >= 90.
+    Matches exact name or The-prefix variants (e.g. 'The X' vs 'X').
     """
-    data = _mb_get("artist/", {"query": f'artist:"{artist_query}"', "limit": 5})
-    candidates = data.get("artists", [])
-    for c in candidates:
-        if int(c.get("score", 0)) >= 80 and \
-           c.get("name", "").lower() == artist_query.lower():
-            return c.get("id"), c.get("name")
-    if candidates and int(candidates[0].get("score", 0)) >= 90:
-        return candidates[0].get("id"), candidates[0].get("name")
+    queries = [artist_query]
+    aq_lower = artist_query.lower()
+    if aq_lower.startswith("the "):
+        queries.append(artist_query[4:].strip())
+    else:
+        queries.append("The " + artist_query)
+
+    for q in queries:
+        data = _mb_get("artist/", {"query": f'artist:"{q}"', "limit": 5})
+        candidates = data.get("artists", [])
+        for c in candidates:
+            if int(c.get("score", 0)) >= 80 and \
+               _strip_the(c.get("name", "")) == _strip_the(artist_query):
+                return c.get("id"), c.get("name")
+        if candidates and int(candidates[0].get("score", 0)) >= 90:
+            return candidates[0].get("id"), candidates[0].get("name")
     return None, None
 
 def _mb_artist_full(mbid):
@@ -2818,7 +3190,7 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
             f"{title}\n\nNo new tracks found.\n\nYour history may be full.\nUse /clear to start fresh.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🗑️ Clear", callback_data="cmd|clear_confirm")],
-                [InlineKeyboardButton("🍌 Main menu",  callback_data="cmd|menu")],
+                [InlineKeyboardButton("🍌 Menu",  callback_data="cmd|menu")],
             ])
         )
         return
@@ -2933,10 +3305,11 @@ def changelog_command(update, context):
     """Show development changelog, newest versions first, split if needed."""
     import html as _html
 
-    if update.message.chat_id != ADMIN_CHAT_ID:
-        return
-
-    sorted_versions = sorted(CHANGELOG.keys(), key=lambda x: float(x), reverse=True)
+    sorted_versions = sorted(
+        CHANGELOG.keys(),
+        key=lambda x: tuple(int(p) for p in x.split(".")),
+        reverse=True
+    )
 
     chunks   = []
     current  = "📀 <b>Kurator Development Log</b>\n\n"
@@ -3046,7 +3419,16 @@ def map_command(update, context):
             ])
         )
         return
-    artist_query = " ".join(context.args)
+    artist_query, _ = _search_artist_flexible(" ".join(context.args))
+    if not artist_query:
+        raw = " ".join(context.args)
+        msg.reply_text(
+            f'Artist not found: "{raw}".\nTry a different spelling.',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("← Back", callback_data="cmd|explore_menu")
+            ]])
+        )
+        return
 
     # Delete previous "Mapping…" message if exists
     prev_id = _pending_map_msgs.pop(chat_id, None)
@@ -3064,6 +3446,10 @@ def map_command(update, context):
     _render_map(msg, artist_query, chat_id)
     _cancel_working(sent, timer)
     _pending_map_msgs.pop(chat_id, None)
+    try:
+        mapping_msg.delete()
+    except Exception:
+        pass
 
 def tags(update, context):
     _render_tags(update.message, page=0)
@@ -3082,94 +3468,97 @@ def cancel_command(update, context):
     _clear_progress_msgs(chat_id)
     _pending_gen.pop(chat_id, None)
     _pending_decades.pop(chat_id, None)
-    msg = "⏹ Generation stopped." if was_generating else "Nothing in progress."
+    msg = "■ Generation stopped." if was_generating else "Nothing in progress."
     update.message.reply_text(msg, reply_markup=main_menu_markup())
 
 # ─── Map renderer ─────────────────────────────────────────────────────────────
 
 def _render_map(message, artist_query, chat_id):
-    # Fetch Discogs styles
-    try:
-        data = requests.get(
-            "https://api.discogs.com/database/search",
-            params={"artist": artist_query, "type": "release",
-                    "per_page": 100, "token": DISCOGS_TOKEN},
-            timeout=15
-        ).json()
-    except Exception as e:
-        log.error(f"Discogs error: {e}")
-        message.reply_text("Discogs request failed. Try again.")
-        return
+    def _discogs_styles(name):
+        try:
+            data = requests.get(
+                "https://api.discogs.com/database/search",
+                params={"artist": name, "type": "release",
+                        "per_page": 100, "token": DISCOGS_TOKEN},
+                timeout=15
+            ).json()
+        except Exception as e:
+            log.error(f"Discogs error for '{name}': {e}")
+            return {}, []
+        counter = {}
+        for rel in data.get("results", []):
+            for s in rel.get("style", []):
+                counter[s] = counter.get(s, 0) + 1
+        styles = sorted(
+            [(s, c) for s, c in counter.items() if c >= 5],
+            key=lambda x: x[1], reverse=True
+        )[:12]
+        if not styles:
+            styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:12]
+        return counter, styles
 
-    counter = {}
-    for rel in data.get("results", []):
-        for s in rel.get("style", []):
-            counter[s] = counter.get(s, 0) + 1
+    counter, sorted_styles = _discogs_styles(artist_query)
+    # If no results and name starts with "The ", retry without it
+    if not sorted_styles and artist_query.lower().startswith("the "):
+        fallback_name = artist_query[4:].strip()
+        log.info(f"[Discogs] No styles for '{artist_query}', retrying as '{fallback_name}'")
+        counter, sorted_styles = _discogs_styles(fallback_name)
 
-    if not counter:
-        message.reply_text(f'No styles found for "{artist_query}".\nTry a different artist or spelling.')
-        return
-
-    sorted_styles = sorted(
-        [(s, c) for s, c in counter.items() if c >= 5],
-        key=lambda x: x[1], reverse=True
-    )[:12]
-    # Fallback if too strict
-    if not sorted_styles:
-        sorted_styles = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:12]
-
-    # Save filtered Discogs styles to tag_index (same blacklist as _discover_and_add_styles)
-    _RENDER_MAP_STYLE_BLACKLIST = {
-        "Rock", "Pop", "Electronic", "Jazz", "Blues", "Folk", "Classical",
-        "Hip Hop", "Reggae", "Country", "Latin", "Funk", "Soul", "Metal",
-        "Punk", "World", "Dance", "Vocal", "Stage & Screen", "Children's",
-        "Non-Music", "Brass & Military", "Folk, World, & Country",
-        "Acoustic", "Ballad", "Contemporary", "Easy Listening", "Spoken Word",
-        "Interview", "Poetry", "Dialogue", "Story", "Religious", "Gospel",
-        "Chanson", "Schlager", "Soundtrack", "Theme", "Score", "Musical",
-        "Comedy", "Novelty", "Parody", "Education", "Radioplay",
-        "Field Recording", "Sound Effects", "Minimal", "Alternative Rock",
-        "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
-        "Experimental", "Ambient", "Noise",
-    }
+    # Save filtered Discogs styles to tag_index using module-level blacklist
     tags_added = 0
     for style, count in sorted_styles:
-        if len(style) <= 4:
-            continue
-        if style in _RENDER_MAP_STYLE_BLACKLIST:
+        if len(style) <= 4 or style in _STYLE_BLACKLIST:
             continue
         if "," in style or "&" in style:
             continue
         if any(w in style.lower() for w in ["music", "various", "compilation", "mix"]):
             continue
-        tag_index[style] = tag_index.get(style, 0) + count
+        _add_tag_to_index(style, count)
         tags_added += 1
     if tags_added:
         save_tag_index()
         log.info(f"Saved {tags_added} Discogs styles from artist card for '{artist_query}'")
 
     info = _get_artist_full_info(artist_query)
-    # Discogs styles (count-weighted) are more reliable than MusicBrainz tags — always prefer them
-    if sorted_styles:
-        info["genres"] = [s for s, _ in sorted_styles[:3]]
-    elif not info["genres"]:
-        pass  # keep empty — card will just show no genre line
+    log.info(f"[Card] '{artist_query}': discogs_styles={sorted_styles[:3]}, mb_country={info.get('country_code')}, begin={info.get('begin_year')}")
+    # Use ONLY Discogs styles as genres — single source of truth
+    info["genres"] = [s for s, _ in sorted_styles[:3]] if sorted_styles else []
 
-    display_name = _artist_display_name(info, artist_query)
+    display_name   = _artist_display_name(info, artist_query)
+    canonical_name = info.get("official_name") or artist_query
+    # Use Last.fm canonical name (artist_query) for image — not MusicBrainz name,
+    # since Last.fm page URLs are keyed on the LFM canonical spelling.
+    img_bytes      = _get_artist_image(artist_query)
+    has_photo      = img_bytes is not None
 
     map_memory[chat_id] = {
-        "artist":       artist_query,
+        "artist":       canonical_name,
         "display_name": display_name,
         "styles":       sorted_styles,
         "info":         info,
+        "has_photo":    has_photo,
     }
     save_map_memory()
 
     card_text = _format_artist_card(artist_query, info)
     buttons   = _build_map_buttons(display_name, sorted_styles, info, chat_id)
 
+    if has_photo:
+        try:
+            import io as _io
+            message.reply_photo(
+                photo=_io.BytesIO(img_bytes),
+                caption=card_text,
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+            return
+        except Exception as e:
+            log.warning(f"[Card] reply_photo failed for {artist_query}: {e}")
+            map_memory[chat_id]["has_photo"] = False
+            save_map_memory()
+
     message.reply_text(
-        f"{card_text}\n\nExplore:",
+        card_text,
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -3204,7 +3593,7 @@ def _build_map_buttons(display_name, sorted_styles, info, chat_id):
             callback_data=f"map_styles|{chat_id}|0"
         )])
 
-    buttons.append([InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")])
+    buttons.append([InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")])
     return buttons
 
 # ─── Tags renderer ────────────────────────────────────────────────────────────
@@ -3337,7 +3726,7 @@ def _render_tags(message, page=0, edit_mode=False, chat_id=None):
             "— /genre — play a genre playlist"
         )
         return
-    all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+    all_tags    = _get_all_tags_sorted()
     sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
     total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
     mode_label  = "  ✏️ Edit mode" if edit_mode else ""
@@ -3359,7 +3748,7 @@ def _render_status(message):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🗑️ Clear history",       callback_data="cmd|clear_confirm")],
             [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_open")],
-            [InlineKeyboardButton("🍌 Main menu",           callback_data="cmd|menu")],
+            [InlineKeyboardButton("🍌 Menu",           callback_data="cmd|menu")],
         ])
     )
 
@@ -3370,7 +3759,7 @@ def _do_reset(message):
     _recent_artists = []
     message.reply_text(
         "History cleared.\n\nTags are kept.\nFresh tracks on your next request.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")]])
     )
 
 def _show_clear_confirm(query):
@@ -3405,8 +3794,17 @@ def handle_buttons(update, context):
     if action == "cmd":
 
         if value == "menu":
+            has_photo = map_memory.get(chat_id, {}).get("has_photo", False)
             map_memory.pop(chat_id, None)
-            query.edit_message_text(f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.", parse_mode="HTML", reply_markup=main_menu_markup())
+            menu_text = f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely."
+            if has_photo:
+                try:
+                    query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+                message.reply_text(menu_text, parse_mode="HTML", reply_markup=main_menu_markup())
+            else:
+                query.edit_message_text(menu_text, parse_mode="HTML", reply_markup=main_menu_markup())
 
         elif value == "picks_menu":
             map_memory.pop(chat_id, None)
@@ -3475,7 +3873,7 @@ def handle_buttons(update, context):
             _render_tags(message, page=0)
 
         elif value == "status":
-            visible = [(t, c) for t, c in tag_index.items() if _is_valid_tag(t)]
+            visible = [(t, c) for t, c in _get_all_tags_sorted() if _is_valid_tag(t)]
             hidden  = len(tag_blacklist)
             query.edit_message_text(
                 f"📊 Status\n\n"
@@ -3485,7 +3883,7 @@ def handle_buttons(update, context):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🗑️ Clear history",       callback_data="cmd|clear_confirm")],
                     [InlineKeyboardButton("🔄 Restore hidden tags", callback_data="tags_restore_open")],
-                    [InlineKeyboardButton("🍌 Main menu",           callback_data="cmd|menu")],
+                    [InlineKeyboardButton("🍌 Menu",           callback_data="cmd|menu")],
                 ])
             )
 
@@ -3496,7 +3894,7 @@ def handle_buttons(update, context):
             _do_reset(message)
         elif value == "help":
             query.edit_message_text(_help_text(), parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]]))
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")]]))
 
     # ── decade_open: show decade toggle grid ─────────────────────────────────
     elif action == "decade_open":
@@ -3702,9 +4100,9 @@ def handle_buttons(update, context):
             _recent_artists.extend(artists_used)
             _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
 
-            # ── Dynamic Era Detection (All Time mode only) ────────────────────
+            # ── Scoring filter (All Time mode only) ──────────────────────────
             if not decades and len(tracks) >= 10:
-                log.info("Fetching track years from MusicBrainz for temporal filtering...")
+                log.info("Fetching track years from MusicBrainz for scoring filter...")
                 track_dicts = []
                 for t_str in tracks:
                     parts = t_str.split(" - ", 1)
@@ -3717,27 +4115,24 @@ def handle_buttons(update, context):
                 log.info(f"Years obtained for {years_found}/{len(track_dicts)} tracks")
 
                 years_only = sorted(t["year"] for t in track_dicts if t.get("year"))
-                if years_only:
-                    year_span   = years_only[-1] - years_only[0]
-                    decades_span = (year_span // 10) + 1
-                    log.info(f"Temporal range: {years_only[0]}-{years_only[-1]} ({decades_span} decades)")
+                pool_median_year = None
+                if len(years_only) >= 10:
+                    pool_median_year = years_only[len(years_only) // 2]
+                    log.info(f"[Scoring] Pool median year: {pool_median_year} "
+                             f"(range {years_only[0]}-{years_only[-1]})")
 
-                    if decades_span >= 4:
-                        # High spread — auto-detect era limit from median cluster
-                        median_year = years_only[len(years_only) // 2]
-                        year_limit  = median_year + 15
-                        log.info(f"[Auto Era Limit] Median: {median_year}, limit: ≤{year_limit}")
-                        before      = len(track_dicts)
-                        for t in track_dicts:
-                            if t.get("year") and t["year"] > year_limit:
-                                log.info(f"[Era Filter] Excluded: {t['str'][:50]} (year {t['year']} > {year_limit})")
-                        track_dicts = [t for t in track_dicts
-                                       if t.get("year") is None or t["year"] <= year_limit]
-                        log.info(f"[Era Filter] Kept {len(track_dicts)}/{before} tracks (≤{year_limit})")
-                        tracks = [t["str"] for t in track_dicts]
-                    elif should_apply_temporal_filter(track_dicts):
-                        filtered_dicts = filter_by_detected_era(track_dicts)
-                        tracks = [t["str"] for t in filtered_dicts]
+                scored = []
+                for t in track_dicts:
+                    sc = _calculate_track_score(t["str"], t.get("year"), pool_median_year, genre=style)
+                    if sc >= SCORE_THRESHOLD:
+                        scored.append(t["str"])
+                    else:
+                        yr = f"year {t['year']}" if t.get("year") else "no year"
+                        log.info(f"[Score Filter] Excluded: {t['str'][:50]} "
+                                 f"(score {sc} < {SCORE_THRESHOLD}, {yr})")
+                log.info(f"[Score Filter] Kept {len(scored)}/{len(tracks)} tracks "
+                         f"(score ≥{SCORE_THRESHOLD})")
+                tracks = scored
 
             # Track user genre profile silently
             _update_user_genre_profile(chat_id, style, decades)
@@ -3854,10 +4249,11 @@ def handle_buttons(update, context):
         bio          = info.get("bio", "No bio available.")
         lfm          = info.get("lastfm_url", "")
         link         = f"\n\n↗ Full profile\n{lfm}" if lfm else ""
-        query.edit_message_text(
+        _edit_card_message(
+            query, chat_id,
             f"{display_name}\n\n{bio}{link}",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"← Back to {display_name[:20]}", callback_data=f"map_back|{chat_id}")
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"← Back to {display_name[:20]}", callback_data=f"card_back|{chat_id}")
             ]])
         )
 
@@ -3880,9 +4276,10 @@ def handle_buttons(update, context):
                 callback_data=safe_callback(f"album_select|{chat_id}|{album['title'][:20]}")
             )])
         buttons.append([InlineKeyboardButton(f"← Back to {display_name[:20]}", callback_data=f"card_back|{chat_id}")])
-        query.edit_message_text(
+        _edit_card_message(
+            query, chat_id,
             f"{display_name} — Studio Albums",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            InlineKeyboardMarkup(buttons)
         )
 
     # ── album_select ──────────────────────────────────────────────────────────
@@ -3928,7 +4325,7 @@ def handle_buttons(update, context):
     # ── map_similar ───────────────────────────────────────────────────────────
     elif action == "map_similar":
         artist = value
-        query.edit_message_text(f"🔗 Fetching similar artists for {artist}…")
+        _edit_card_message(query, chat_id, f"🔗 Fetching similar artists for {artist}…", None)
         similar = [s["name"] for s in
                    lastfm("artist.getsimilar", artist=artist, limit=60)
                    .get("similarartists", {}).get("artist", [])]
@@ -3959,9 +4356,15 @@ def handle_buttons(update, context):
             _nav_history[chat_id].append(from_artist)
         _nav_history[chat_id] = _nav_history[chat_id][-10:]
 
-        # Just send new card — don't touch the current message
-        message.reply_text(f"🧑‍🎤 Exploring {new_artist.upper()}…")
+        # Resolve to Last.fm canonical name before card lookup
+        canonical, _ = _search_artist_flexible(new_artist)
+        new_artist = canonical or new_artist
+        _exp_msg = message.reply_text(f"🧑‍🎤 Exploring {new_artist.upper()}…")
         _render_map(message, new_artist, chat_id)
+        try:
+            _exp_msg.delete()
+        except Exception:
+            pass
 
     # ── trail_go ──────────────────────────────────────────────────────────────
     elif action == "trail_go":
@@ -4005,7 +4408,7 @@ def handle_buttons(update, context):
     # ── similar_generate ──────────────────────────────────────────────────────
     elif action == "similar_generate":
         artist = value
-        query.edit_message_text(f"🎵 Generating playlist from {artist}'s scene…")
+        _edit_card_message(query, chat_id, f"🔗 Generating playlist from {artist}'s scene…", None)
         sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
         # Use the raw Last.fm similar list already stored in map_memory (unfiltered)
         stored = map_memory.get(chat_id, {}).get("similar", [])
@@ -4050,9 +4453,10 @@ def handle_buttons(update, context):
             buttons.append(nav)
         buttons.append([InlineKeyboardButton(f"← Back to {display_name[:20]}", callback_data=f"card_back|{chat_id}")])
         page_label = f" (page {page+1}/{total_pages})" if total_pages > 1 else ""
-        query.edit_message_text(
+        _edit_card_message(
+            query, chat_id,
             f"🏷️ {display_name} — Styles{page_label}",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            InlineKeyboardMarkup(buttons)
         )
 
     # ── tag_style: genre era prompt launched from /tags view ──────────────────
@@ -4079,15 +4483,19 @@ def handle_buttons(update, context):
             return
         card_text = _format_artist_card(artist, info)
         buttons   = _build_map_buttons(display_name, styles, info, chat_id)
-        query.edit_message_text(f"{card_text}\n\nExplore:", reply_markup=InlineKeyboardMarkup(buttons))
+        _edit_card_message(query, chat_id, card_text, InlineKeyboardMarkup(buttons))
 
     elif action == "map_back":
         history_stack = _nav_history.get(chat_id, [])
         if history_stack:
             prev_artist = history_stack.pop()
             _nav_history[chat_id] = history_stack
-            message.reply_text(f"🧑‍🎤 Exploring {prev_artist.upper()}…")
+            _exp_msg = message.reply_text(f"🧑‍🎤 Exploring {prev_artist.upper()}…")
             _render_map(message, prev_artist, chat_id)
+            try:
+                _exp_msg.delete()
+            except Exception:
+                pass
             return
 
         mem          = map_memory.get(chat_id, {})
@@ -4113,7 +4521,7 @@ def handle_buttons(update, context):
             pass
         card_text = _format_artist_card(artist, info)
         buttons   = _build_map_buttons(display_name, styles, info, chat_id)
-        message.reply_text(f"{card_text}\n\nExplore:", reply_markup=InlineKeyboardMarkup(buttons))
+        message.reply_text(card_text, reply_markup=InlineKeyboardMarkup(buttons))
 
     # ── tags ──────────────────────────────────────────────────────────────────
     elif action == "tags_page":
@@ -4121,7 +4529,7 @@ def handle_buttons(update, context):
         # Clear pending state when leaving edit mode
         _pending_tag_deletes.pop(chat_id, None)
         _pending_tag_restores.pop(chat_id, None)
-        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+        all_tags    = _get_all_tags_sorted()
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         query.edit_message_text(
@@ -4131,7 +4539,7 @@ def handle_buttons(update, context):
 
     elif action == "tags_edit":
         page        = int(value)
-        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+        all_tags    = _get_all_tags_sorted()
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         query.edit_message_text(
@@ -4149,7 +4557,7 @@ def handle_buttons(update, context):
             sel.discard(tag)
         else:
             sel.add(tag)
-        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+        all_tags    = _get_all_tags_sorted()
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         query.edit_message_text(
@@ -4178,16 +4586,16 @@ def handle_buttons(update, context):
         page   = int(value) if value else 0
         to_del = _pending_tag_deletes.pop(chat_id, set())
         for tag in to_del:
-            tag_index.pop(tag, None)
+            tag_index.pop(normalize_tag_for_index(tag), None)
             tag_blacklist.add(tag.lower())
         if to_del:
             save_tag_index()
             save_tag_blacklist()
-        all_tags    = sorted(tag_index.items(), key=lambda x: x[1], reverse=True)
+        all_tags    = _get_all_tags_sorted()
         sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
         if not sorted_tags:
             query.edit_message_text("Tag collection is empty.\n\nUse /artist <name> to explore an artist and start collecting genres.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]]))
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")]]))
             return
         total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
         page = min(page, total_pages - 1)
@@ -4287,7 +4695,7 @@ def handle_buttons(update, context):
         query.edit_message_text(
             "🗑️ Tags reset.\n\nAll visible and hidden tags removed.\n\nNew tags will build up as you use Kurator.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")],
+                [InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")],
             ])
         )
 
@@ -4306,16 +4714,16 @@ def handle_buttons(update, context):
         # Send Soundiiz instructions as a new reply — playlist stays visible above
         msg = message.reply_text(
             "📡 Export your playlist\n\n"
-            "1. Go to Soundiiz — log in or create a free account\n\n"
-            "2. Tap ··· top right — select \"Import playlist\"\n\n"
-            "3. Select \"From plain text\"\n\n"
-            "4. Paste your playlist — tap \"Send text\"\n\n"
-            "5. Choose your platform: Spotify, Qobuz, Apple Music and more\n\n"
-            "↗ soundiiz.com",
+            "1. Copy the playlist text above\n"
+            "2. Open Soundiiz — log in or sign up\n"
+            "3. Import playlist → From plain text\n"
+            "4. Paste → Send text\n"
+            "5. Choose your platform",
             disable_web_page_preview=True,
         )
         msg.edit_reply_markup(
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("→ soundiiz.com", url="https://soundiiz.com")],
                 [InlineKeyboardButton("✕ Close", callback_data=f"delete_msg|{msg.message_id}")],
             ])
         )
@@ -4355,7 +4763,7 @@ def handle_buttons(update, context):
         if not isinstance(stored, dict) or not stored:
             query.edit_message_text(
                 "Playlist expired — generate a new one.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Main menu", callback_data="cmd|menu")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")]])
             )
             return
         text = stored.get("text")
@@ -4444,13 +4852,26 @@ def handle_text_reply(update, context):
                 msg.bot.delete_message(chat_id=chat_id, message_id=prev_id)
             except Exception:
                 pass
-        mapping_msg = msg.reply_text(f"🧑‍🎤 Exploring {text.upper()}…")
+        artist_query, _ = _search_artist_flexible(text)
+        if not artist_query:
+            msg.reply_text(
+                f'Artist not found: "{text}".\nTry a different spelling.',
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("← Back", callback_data="cmd|explore_menu")
+                ]])
+            )
+            return
+        mapping_msg = msg.reply_text(f"🧑‍🎤 Exploring {artist_query.upper()}…")
         _pending_map_msgs[chat_id] = mapping_msg.message_id
         sent, timer = _working_message(msg, "🧑‍🎤 Still exploring…")
         _nav_history.pop(chat_id, None)
-        _render_map(msg, text, chat_id)
+        _render_map(msg, artist_query, chat_id)
         _cancel_working(sent, timer)
         _pending_map_msgs.pop(chat_id, None)
+        try:
+            mapping_msg.delete()
+        except Exception:
+            pass
 
     elif action == "awaiting_genre":
         _pending_gen.pop(chat_id, None)
@@ -4488,7 +4909,7 @@ from telegram import BotCommand
 try:
     updater.bot.delete_my_commands()
     updater.bot.set_my_commands([
-        BotCommand("start",    "🍌 Main menu"),
+        BotCommand("start",    "🍌 Menu"),
         BotCommand("playlist", "🎧 Kurator's Playlist"),
         BotCommand("dig",      "⛏️ Dig deeper"),
         BotCommand("rare",     "💎 Rare finds"),
