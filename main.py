@@ -1977,10 +1977,16 @@ def _filter_underground_artists(artists, genre, decades=None, mode="playlist"):
 
     log.info(f"[Underground] Pool size: {current_pool}, min required: {min_required}")
     
-    # Progressive thresholds — relaxed for Similar Artists to fill thin pools
+    # Progressive thresholds — adaptive based on mode and pool size
     if mode == "similar":
         thresholds = [3, 2, 1, 0]
         log.info(f"[Underground-Similar] Using relaxed thresholds for Similar Artists")
+    elif current_pool < 100:
+        thresholds = [2, 1, 0]
+        log.info(f"[Underground] Small pool ({current_pool}) — relaxed thresholds {thresholds}")
+    elif current_pool < 200:
+        thresholds = [3, 2, 1, 0]
+        log.info(f"[Underground] Medium pool ({current_pool}) — moderate thresholds {thresholds}")
     else:
         thresholds = [5, 4, 3, 2, 1]
     for threshold in thresholds:
@@ -2100,6 +2106,21 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
 
     # Add seeds themselves to pool
     expanded.update(seeds_to_expand)
+
+    # Cache-only temporal filter: reject expansion artists already known to be invalid.
+    # No new MB calls here — expansion pool can be 1000+ artists; rate limit makes full
+    # validation impractical. Artists validated during seed phase will be filtered for free.
+    if decades:
+        decades_key = tuple(sorted(decades))
+        before = len(expanded)
+        expanded = {
+            a for a in expanded
+            if (_seed_validation_cache.get((a.lower(), decades_key), (True,))[0] is not False)
+        }
+        filtered_count = before - len(expanded)
+        if filtered_count:
+            log.info(f"[Expansion] Cache-filtered {filtered_count} known-invalid artists")
+
     candidates = [a for a in expanded if _is_valid_artist_name(a)]
     random.shuffle(candidates)
     log.info(f"[Expansion] {len(candidates)} candidates after dedup + name filter")
@@ -2525,6 +2546,7 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
 
     # No MB validation — Discogs is source of truth for era
     final_pool = verified if len(verified) >= 10 else pool
+    log.info(f"[Selection Debug] Starting track selection: {len(final_pool)} artists, target={size or PLAYLIST_SIZE}")
 
     # Compute decade year range for album filtering
     decade_year_range = None
@@ -2579,6 +2601,7 @@ def select_tracks_with_decades(artists, size=None, decades=None, message=None, m
                 except Exception as e:
                     log.error(f"select_tracks_with_decades: {e}")
 
+    log.info(f"[Selection Debug] Returning {len(tracks)} tracks (pool={len(filtered_pool)}, tried={len(filtered_pool[:len(filtered_pool)])})")
     for key in keys_added:
         add_to_history(key)
     save_history()
@@ -2911,7 +2934,11 @@ def _get_musicbrainz_artist_data(artist):
     Search MusicBrainz for an artist and return begin_year.
     Only accepts Groups (bands), not Persons — avoids confusing birth year
     (e.g. Slash 1965) with band formation year.
-    Returns dict {"begin_year": int|None, "name": str, "mbid": str} or None.
+
+    Returns:
+        dict {"begin_year": int|None, "name": str, "mbid": str, "type": str}  if Group found
+        dict {"type": "Person", "rejected": True}                              if Person explicitly detected
+        None                                                                   if no matching data found
     """
     queries = [artist]
     al = artist.lower()
@@ -2919,6 +2946,8 @@ def _get_musicbrainz_artist_data(artist):
         queries.append(artist[4:].strip())
     else:
         queries.append("The " + artist)
+
+    person_found = False  # track if MB explicitly identified artist as Person
 
     for q in queries:
         data = _mb_get("artist/", {"query": f'artist:"{q}"', "limit": 5})
@@ -2933,21 +2962,21 @@ def _get_musicbrainz_artist_data(artist):
                     match = c
                     break
                 elif c.get("type") == "Person":
-                    log.info(f"[MB] '{artist}' matched as Person — skipping (want Group)")
-                    # Keep looking for a Group variant
+                    log.info(f"[MB] '{artist}' is Person — will reject")
+                    person_found = True
                 elif match is None:
-                    match = c  # non-Person, non-Group fallback
+                    match = c  # Orchestra, Choir, etc — non-Person fallback
 
-        # Score >= 90 fallback: accept only if not Person
+        # Score >= 90 fallback
         if not match and candidates:
             top = candidates[0]
-            if int(top.get("score", 0)) >= 90 and top.get("type") != "Person":
-                match = top
+            if int(top.get("score", 0)) >= 90:
+                if top.get("type") == "Person":
+                    person_found = True
+                else:
+                    match = top
 
         if match:
-            if match.get("type") == "Person":
-                log.info(f"[MB] '{artist}' is Person — skipping to avoid birth year")
-                continue  # try next query variant
             begin_date = (match.get("life-span") or {}).get("begin") or ""
             begin_year = None
             if begin_date:
@@ -2957,6 +2986,10 @@ def _get_musicbrainz_artist_data(artist):
                     pass
             return {"begin_year": begin_year, "name": match.get("name"), "mbid": match.get("id"),
                     "type": match.get("type")}
+
+    # No Group found — signal rejection if Person was definitively detected
+    if person_found:
+        return {"type": "Person", "rejected": True}
     return None
 
 
@@ -2985,6 +3018,13 @@ def _validate_seed_temporal_coherence(artist, target_decades):
 
     try:
         mb_data = _get_musicbrainz_artist_data(artist)
+
+        # MB explicitly identified this as a Person — hard reject
+        if mb_data and mb_data.get("rejected"):
+            result = (False, None, "Person (not Group) — rejected")
+            _seed_validation_cache[cache_key] = result
+            return result
+
         if not mb_data:
             result = (True, None, "no MB data (accepted)")
             _seed_validation_cache[cache_key] = result
