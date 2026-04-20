@@ -1977,16 +1977,10 @@ def _filter_underground_artists(artists, genre, decades=None, mode="playlist"):
 
     log.info(f"[Underground] Pool size: {current_pool}, min required: {min_required}")
     
-    # Progressive thresholds — adaptive based on mode and pool size
+    # Progressive thresholds — era playlists bypass this function entirely (see Oracle handler)
     if mode == "similar":
         thresholds = [3, 2, 1, 0]
         log.info(f"[Underground-Similar] Using relaxed thresholds for Similar Artists")
-    elif current_pool < 100:
-        thresholds = [2, 1, 0]
-        log.info(f"[Underground] Small pool ({current_pool}) — relaxed thresholds {thresholds}")
-    elif current_pool < 200:
-        thresholds = [3, 2, 1, 0]
-        log.info(f"[Underground] Medium pool ({current_pool}) — moderate thresholds {thresholds}")
     else:
         thresholds = [5, 4, 3, 2, 1]
     for threshold in thresholds:
@@ -2034,8 +2028,10 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
     3. Expand each seed via artist.getsimilar
     4. Filter expanded pool by era via MB album years
     """
-    # Step 1: get top artists for genre tag
-    data  = lastfm("tag.gettopartists", tag=genre, limit=100)
+    # Step 1: get top artists for genre tag — more seeds for era-specific to offset validation rejections
+    limit = 150 if decades else 100
+    log.info(f"[Seeds] Fetching {limit} initial seeds ({'era-specific' if decades else 'all-time'})")
+    data  = lastfm("tag.gettopartists", tag=genre, limit=limit)
     items = data.get("topartists", {}).get("artist", [])
     if not items:
         log.info(f"Last.fm tag '{genre}' returned no artists")
@@ -4236,23 +4232,30 @@ def handle_buttons(update, context):
             if len(filtered_pool) < 10:
                 filtered_pool = pool
 
-            # Apply underground scoring filter
-            if message:
-                _safe_reply(message, "🔍 Filtering for quality…")
-            filtered_pool = _filter_underground_artists(filtered_pool, style, decades)
-            if len(filtered_pool) < 10:
-                # Safety fallback — cap at 750k; listeners==0 means unscored, skip (could be mainstream)
-                cap_fallback = [a for a in pool
-                                if 0 < _artist_listeners_cache.get(a, 0) <= 750_000]
-                filtered_pool = cap_fallback if len(cap_fallback) >= 5 else pool
-                log.info(f"[Oracle-POC] Safety fallback: {len(filtered_pool)} artists (cap applied)")
+            # Underground filter: skip for era playlists — temporal validation already guarantees quality.
+            # Filtering here would eliminate correct but obscure artists (exactly what we want).
+            if decades:
+                log.info(f"[Underground] Era-specific mode {decades} — skipping filter (temporal validation sufficient)")
+                log.info(f"[Underground] Keeping all {len(filtered_pool)} artists from validated seeds + expansion")
+            else:
+                if message:
+                    _safe_reply(message, "🔍 Filtering for quality…")
+                filtered_pool = _filter_underground_artists(filtered_pool, style, decades)
+                if len(filtered_pool) < 10:
+                    # Safety fallback — cap at 750k; listeners==0 means unscored, skip (could be mainstream)
+                    cap_fallback = [a for a in pool
+                                    if 0 < _artist_listeners_cache.get(a, 0) <= 750_000]
+                    filtered_pool = cap_fallback if len(cap_fallback) >= 5 else pool
+                    log.info(f"[Oracle-POC] Safety fallback: {len(filtered_pool)} artists (cap applied)")
 
             log.info(f"[Oracle-POC] Final pool: {len(filtered_pool)} artists for '{style}' {decades}")
 
-            tracks       = []
-            keys_added   = set()
-            seen_artists = set()
-            artists_used = []
+            tracks             = []
+            keys_added         = set()
+            artist_track_count = {}
+            artists_used       = []
+            MAX_PER_ARTIST     = 3 if decades and len(filtered_pool) < 80 else (2 if decades else 1)
+            log.info(f"[Oracle-POC] Track selection: {len(filtered_pool)} artists, MAX_PER_ARTIST={MAX_PER_ARTIST}")
 
             BATCH_SIZE = 20
             for i in range(0, min(len(filtered_pool), target * 4), BATCH_SIZE):
@@ -4270,12 +4273,13 @@ def handle_buttons(update, context):
                             if result:
                                 artist, track_name, key = result
                                 artist_norm = normalize_artist(artist)
-                                if artist_norm in seen_artists:
+                                track_count = artist_track_count.get(artist_norm, 0)
+                                if track_count >= MAX_PER_ARTIST:
                                     continue
                                 if not track_in_history(key) and key not in keys_added:
                                     tracks.append(f"{artist} - {track_name}")
                                     keys_added.add(key)
-                                    seen_artists.add(artist_norm)
+                                    artist_track_count[artist_norm] = track_count + 1
                                     artists_used.append(artist)
                         except Exception as e:
                             log.error(f"build genre track: {e}")
