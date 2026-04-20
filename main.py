@@ -2041,47 +2041,26 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
     if not top_names:
         return []
 
-    # Step 2: pick 5 random seeds from positions 30-150 — skip top 30 (likely 500k+ listeners)
-    # Filter out invalid seeds (song titles, lowercase usernames, single words that look like titles)
-    seed_pool = [a for a in top_names[30:150]
-                 if len(a) > 2
-                 and not a[0].islower()
-                 and not any(c in a for c in ["@", "/", "http"])
-                 and len(a.split()) >= 1]
-    if not seed_pool:
-        seed_pool = top_names[:50]
-
-    # Temporal validation: filter seed_pool to artists who began in target decades
-    # (MB rate limiting handled inside _get_musicbrainz_artist_data via _mb_get global lock)
+    # Step 2: build seed pool
     if decades:
-        log.info(f"[Seed Validation] Validating seeds for {decades}")
-        validated_pool = []
-        rejected_seeds = []
-        for artist in seed_pool:
-            is_valid, begin_year, reason = _validate_seed_temporal_coherence(artist, decades)
-            if is_valid:
-                validated_pool.append(artist)
-                log.info(f"[Seed] ✓ '{artist}' - {reason}")
-            else:
-                rejected_seeds.append((artist, begin_year))
-                log.info(f"[Seed] ✗ '{artist}' - {reason}")
-            if len(validated_pool) >= 40:
-                break
-        total_checked = len(validated_pool) + len(rejected_seeds)
-        log.info(f"[Seed Validation] Kept {len(validated_pool)}/{total_checked} checked ({len(rejected_seeds)} rejected)")
-        if rejected_seeds:
-            decade_max = max(DECADE_YEARS[d][1] for d in decades if d in DECADE_YEARS)
-            too_late  = [f"{n} ({y})" for n, y in rejected_seeds if y and y > decade_max]
-            too_early = [f"{n} ({y})" for n, y in rejected_seeds if y and y <= decade_max]
-            if too_late:
-                log.info(f"[Seed Validation] Too late: {', '.join(too_late[:5])}")
-            if too_early:
-                log.info(f"[Seed Validation] Too early: {', '.join(too_early[:3])}")
-        if validated_pool:
-            random.shuffle(validated_pool)
-            log.info(f"[Seeds] Shuffled {len(validated_pool)} validated seeds for diversity")
-            log.info(f"[Seeds] Sample: {', '.join(validated_pool[:5])}")
-            seed_pool = validated_pool
+        # Era mode: take LFM tail (least popular = obscure), validate temporal.
+        # Delegates entirely to _get_obscure_seeds_for_genre (handles its own 500-artist fetch).
+        seed_pool = _get_obscure_seeds_for_genre(genre, decades, limit=30)
+        if not seed_pool:
+            # Ultimate fallback — top_names tail as unvalidated seeds
+            log.warning(f"[Seeds] Obscure seeds empty — falling back to LFM tail (unvalidated)")
+            seed_pool = [a for a in reversed(top_names)
+                         if len(a) > 2 and not a[0].islower()
+                         and not any(c in a for c in ["@", "/", "http"])][:30]
+    else:
+        # All Time: skip top 30 (mainstream), use next layer
+        seed_pool = [a for a in top_names[30:150]
+                     if len(a) > 2
+                     and not a[0].islower()
+                     and not any(c in a for c in ["@", "/", "http"])
+                     and len(a.split()) >= 1]
+        if not seed_pool:
+            seed_pool = top_names[:50]
 
     # Step 3: expand seeds via artist.getsimilar
     # Use all validated seeds (up to 30, already shuffled) instead of a 5-seed sample.
@@ -2104,8 +2083,7 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
     expanded.update(seeds_to_expand)
 
     # Cache-only temporal filter: reject expansion artists already known to be invalid.
-    # No new MB calls here — expansion pool can be 1000+ artists; rate limit makes full
-    # validation impractical. Artists validated during seed phase will be filtered for free.
+    # No new MB calls — expansion pool can be 1000+ artists; rate limit makes full validation impractical.
     if decades:
         decades_key = tuple(sorted(decades))
         before = len(expanded)
@@ -2113,9 +2091,22 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
             a for a in expanded
             if (_seed_validation_cache.get((a.lower(), decades_key), (True,))[0] is not False)
         }
-        filtered_count = before - len(expanded)
-        if filtered_count:
-            log.info(f"[Expansion] Cache-filtered {filtered_count} known-invalid artists")
+        if before - len(expanded):
+            log.info(f"[Expansion] Cache-filtered {before - len(expanded)} known-invalid artists")
+
+    # Listener filter: remove artists >500K listeners from expansion pool (cache-only, no new calls).
+    # Obscure seeds produce obscure similar artists, but getsimilar sometimes includes big names.
+    if decades:
+        MAX_EXPANSION_LISTENERS = 500_000
+        before = len(expanded)
+        expanded = {
+            a for a in expanded
+            if a not in _artist_listeners_cache                        # not fetched yet — accept (conservative)
+            or _artist_listeners_cache[a] <= MAX_EXPANSION_LISTENERS   # known obscure
+        }
+        filtered_listeners = before - len(expanded)
+        if filtered_listeners:
+            log.info(f"[Expansion] Listener-filtered {filtered_listeners} artists >{MAX_EXPANSION_LISTENERS:,} listeners")
 
     candidates = [a for a in expanded if _is_valid_artist_name(a)]
     random.shuffle(candidates)
@@ -2137,6 +2128,97 @@ def _get_era_artists_from_lastfm(genre, decades, max_artists=150):
     random.shuffle(pool)
     log.info(f"Genre '{genre}' pool: {len(pool)}/{len(candidates)} passed genre filter")
     return pool[:max_artists]
+
+
+def _get_obscure_seeds_for_genre(genre, decades, limit=30):
+    """
+    Get OBSCURE seeds by inverting Last.fm popularity order.
+
+    Fetches 500 artists, takes the TAIL (least popular by LFM ordering,
+    which is popularity DESC), validates temporal coherence, and returns
+    up to `limit` validated obscure seeds.
+
+    Obscure seeds → obscure expansion → genuinely unknown music.
+    """
+    log.info(f"[Seeds] Fetching obscure seeds for '{genre}' {decades}")
+
+    try:
+        data  = lastfm("tag.gettopartists", tag=genre, limit=500)
+        items = data.get("topartists", {}).get("artist", [])
+        all_names = [a["name"] for a in items if a.get("name")]
+    except Exception as e:
+        log.warning(f"[Seeds] 500-artist fetch failed ({e}), trying 200")
+        try:
+            data  = lastfm("tag.gettopartists", tag=genre, limit=200)
+            items = data.get("topartists", {}).get("artist", [])
+            all_names = [a["name"] for a in items if a.get("name")]
+        except Exception:
+            return []
+
+    if not all_names:
+        return []
+
+    log.info(f"[Seeds] Got {len(all_names)} artists for '{genre}'")
+
+    # LFM returns artists in popularity DESC order.
+    # Take the TAIL (last 200) = least popular for this genre.
+    # Shuffle the tail so seed selection varies between runs.
+    tail = all_names[max(0, len(all_names) - 200):]
+    random.shuffle(tail)
+
+    # Batch-get listeners for a sample of the tail (for logging only, not filtering).
+    # Use ThreadPoolExecutor with cache — mostly free on repeat runs.
+    sample = tail[:40]
+    with ThreadPoolExecutor(max_workers=15) as ex:
+        futures = {ex.submit(_fetch_listeners, a): a for a in sample}
+        listeners_map = {}
+        for f in as_completed(futures):
+            a = futures[f]
+            try:
+                _, count = f.result()
+                listeners_map[a] = count
+                _artist_listeners_cache[a] = count
+            except Exception:
+                pass
+
+    if listeners_map:
+        by_listeners = sorted(listeners_map.items(), key=lambda x: x[1])
+        log.info(f"[Seeds] Most obscure sample: {by_listeners[0][0]} ({by_listeners[0][1]:,} listeners)")
+        log.info(f"[Seeds] Least obscure sample: {by_listeners[-1][0]} ({by_listeners[-1][1]:,} listeners)")
+
+    # Validate temporal coherence; stop as soon as we hit the target.
+    validated = []
+    rejected  = []
+    for artist in tail:
+        is_valid, begin_year, reason = _validate_seed_temporal_coherence(artist, decades)
+        if is_valid:
+            validated.append(artist)
+            log.info(f"[Seed] ✓ '{artist}' - {reason}")
+        else:
+            rejected.append((artist, begin_year))
+            log.debug(f"[Seed] ✗ '{artist}' - {reason}")
+        if len(validated) >= limit:
+            break
+
+    log.info(f"[Seeds] Validated {len(validated)}/{len(validated)+len(rejected)} obscure seeds (target={limit})")
+
+    # Fallback: if very few seeds, try again from positions 150-300 (mid-tier obscure)
+    if len(validated) < 10 and len(all_names) > 150:
+        log.warning(f"[Seeds] Only {len(validated)} seeds — trying mid-tier obscure (pos 150-300)")
+        mid_tier = all_names[150:300]
+        random.shuffle(mid_tier)
+        for artist in mid_tier:
+            if artist in validated:
+                continue
+            is_valid, begin_year, reason = _validate_seed_temporal_coherence(artist, decades)
+            if is_valid:
+                validated.append(artist)
+                log.info(f"[Seed] ✓ '{artist}' (mid-tier) - {reason}")
+            if len(validated) >= 15:
+                break
+        log.info(f"[Seeds] After fallback: {len(validated)} seeds")
+
+    return validated
 
 
 def _is_valid_fallback_track(artist, track_name):
