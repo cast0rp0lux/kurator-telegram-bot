@@ -21,10 +21,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.5)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.6)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.6": {
+        "date": "2026-04-20",
+        "changes": [
+            "Fix: fotos de artistas no aparecían para búsquedas sin 'The' (e.g. 'wedding present')",
+            "Canonical name (Last.fm) propagado correctamente a _get_artist_image y map_memory",
+            "map_memory['artist'] ahora guarda LFM canonical, no MB official name",
+        ],
+        "technical": [
+            "map_memory['artist']: almacena artist_query (LFM canonical) en vez de canonical_name (MB)",
+            "Eliminada llamada duplicada a _search_artist_flexible en explore_artist callback",
+            "Logs [Search]/[Card]/[Image] para rastrear canonical en cada paso",
+        ]
+    },
     "6.9.5": {
         "date": "2026-04-20",
         "changes": [
@@ -3865,9 +3878,11 @@ def map_command(update, context):
             ])
         )
         return
-    artist_query, _ = _search_artist_flexible(" ".join(context.args))
+    raw_input    = " ".join(context.args)
+    artist_query, _ = _search_artist_flexible(raw_input)
+    log.info(f"[Search] User input: '{raw_input}' → Canonical: '{artist_query}'")
     if not artist_query:
-        raw = " ".join(context.args)
+        raw = raw_input
         msg.reply_text(
             f'Artist not found: "{raw}".\nTry a different spelling.',
             reply_markup=InlineKeyboardMarkup([[
@@ -3920,6 +3935,7 @@ def cancel_command(update, context):
 # ─── Map renderer ─────────────────────────────────────────────────────────────
 
 def _render_map(message, artist_query, chat_id):
+    log.info(f"[Card] Rendering for '{artist_query}' (LFM canonical)")
     def _discogs_styles(name):
         try:
             data = requests.get(
@@ -3985,13 +4001,14 @@ def _render_map(message, artist_query, chat_id):
 
     display_name   = _artist_display_name(info, artist_query)
     canonical_name = info.get("official_name") or artist_query
-    # Use Last.fm canonical name (artist_query) for image — not MusicBrainz name,
-    # since Last.fm page URLs are keyed on the LFM canonical spelling.
+    # artist_query is the LFM canonical spelling — use it for image since Last.fm
+    # page URLs are keyed on LFM canonical, not MusicBrainz official name.
+    log.info(f"[Image] Fetching for canonical: '{artist_query}'")
     img_bytes      = _get_artist_image(artist_query)
     has_photo      = img_bytes is not None
 
     map_memory[chat_id] = {
-        "artist":       canonical_name,
+        "artist":       artist_query,   # LFM canonical — needed for image fetching in Back nav
         "display_name": display_name,
         "styles":       sorted_styles,
         "info":         info,
@@ -4888,6 +4905,7 @@ def handle_buttons(update, context):
 
         # Resolve to Last.fm canonical name before card lookup
         canonical, _ = _search_artist_flexible(new_artist)
+        log.info(f"[Search] explore_artist: '{new_artist}' → Canonical: '{canonical or new_artist}'")
         new_artist = canonical or new_artist
         _exp_msg = message.reply_text(f"🧑‍🎤 Exploring {new_artist.upper()}…")
         _render_map(message, new_artist, chat_id)
@@ -5383,6 +5401,7 @@ def handle_text_reply(update, context):
             except Exception:
                 pass
         artist_query, _ = _search_artist_flexible(text)
+        log.info(f"[Search] User input: '{text}' → Canonical: '{artist_query}'")
         if not artist_query:
             msg.reply_text(
                 f'Artist not found: "{text}".\nTry a different spelling.',
