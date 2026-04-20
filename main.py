@@ -21,10 +21,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.2)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.3)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.3": {
+        "date": "2026-04-20",
+        "changes": [
+            "Era playlists (e.g. Hard Rock 70s) usan Discogs releases directamente",
+            "Sin expansión Last.fm en modo era — elimina contaminación de seeds mainstream",
+            "All Time sin cambios: Last.fm + underground filter",
+        ],
+        "technical": [
+            "_discogs_fetch_era_artists_bulk: styles+era, 50 llamadas concurrentes, artistas de releases reales",
+            "Oracle build|: flujo bifurcado — era usa Discogs bulk, all-time usa cadena LFM+Discogs+MB",
+            "Fallback era: _get_era_artists_from_discogs → _get_era_artists_from_lastfm si bulk vacío",
+            "Cache-only MB filter en era (artistas inválidos conocidos descartados sin nuevas llamadas)",
+        ]
+    },
     "6.9.2": {
         "date": "2026-04-18",
         "changes": [
@@ -2378,6 +2392,83 @@ def _get_era_artists_from_discogs(decades, mode="playlist", max_artists=80, styl
     return qualified
 
 
+def _discogs_fetch_era_artists_bulk(styles, decades, max_artists=200):
+    """
+    Fetch artists from Discogs releases for a specific genre+era.
+    Discogs year filter IS the temporal guarantee — release year 1970-1979 means
+    those records were pressed in that era, no MB validation required.
+
+    Args:
+        styles: list of Discogs style strings (or single string); uses first 3.
+        decades: set like {'70s'}.
+        max_artists: cap on returned artists.
+
+    Returns:
+        Shuffled list of artist names.
+    """
+    if isinstance(styles, str):
+        styles = [styles]
+    styles = [s for s in styles if s][:3]
+    if not styles or not decades:
+        return []
+
+    year_lo = min(DECADE_YEARS[d][0] for d in decades)
+    year_hi = max(DECADE_YEARS[d][1] for d in decades)
+    all_years = list(range(year_lo, year_hi + 1))
+
+    # Build tasks: styles × years × random pages — cap at 50 API calls
+    tasks = []
+    for style in styles:
+        for year in all_years:
+            pages = random.sample(range(1, 10), min(3, 9))
+            for page in pages:
+                tasks.append((style, year, page))
+    random.shuffle(tasks)
+    tasks = tasks[:50]  # 50 calls × 50 results = up to 2,500 releases
+
+    def _fetch_one(style, year, page):
+        try:
+            r = requests.get(
+                "https://api.discogs.com/database/search",
+                params={
+                    "style":    style,
+                    "year":     str(year),
+                    "type":     "release",
+                    "per_page": 50,
+                    "page":     page,
+                    "token":    DISCOGS_TOKEN,
+                },
+                timeout=10
+            ).json()
+            artists = []
+            for rel in r.get("results", []):
+                title = rel.get("title", "")
+                if " - " in title:
+                    artist = _clean_artist_name(title.split(" - ")[0].strip())
+                    if artist and not _is_blacklisted(artist) and 2 <= len(artist) <= 60:
+                        artists.append(artist)
+            return artists
+        except Exception as e:
+            log.error(f"[Discogs-Bulk] {style} {year} p{page}: {e}")
+            return []
+
+    artist_counts = {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = [ex.submit(_fetch_one, s, y, p) for s, y, p in tasks]
+        for f in as_completed(futures):
+            for artist in f.result():
+                artist_counts[artist] = artist_counts.get(artist, 0) + 1
+
+    # Prefer artists appearing in 2+ releases (removes one-off noise / corrupt titles)
+    qualified = [a for a, c in sorted(artist_counts.items(), key=lambda x: -x[1]) if c >= 2]
+    if len(qualified) < 20:
+        qualified = sorted(artist_counts.keys(), key=lambda a: -artist_counts[a])
+
+    random.shuffle(qualified)
+    log.info(f"[Discogs-Bulk] {len(qualified)} artists ({len(artist_counts)} total) styles={styles} {decades}")
+    return qualified[:max_artists]
+
+
 def _expand_era_pool_dig(seed_artists):
     """Expand via Last.fm similar — for Dig mode."""
     pool = set()
@@ -4287,50 +4378,70 @@ def handle_buttons(update, context):
                 max(DECADE_YEARS[d][1] for d in decades)
             ) if decades else None
 
+            global _recent_artists
+            target        = GENRE_PLAYLIST_SIZE
             discogs_styles = _resolve_genre_styles(style, decades)
-            pool = _get_era_artists_from_discogs(decades, mode="playlist",
-                                                  max_artists=100,
-                                                  style_override=discogs_styles)
 
-            # Fallback to Last.fm seeds if Discogs returns nothing
-            if not pool:
-                log.info(f"[Oracle-POC] Discogs empty for '{style}' — falling back to Last.fm")
-                pool = _get_era_artists_from_lastfm(style, decades, max_artists=150)
+            if decades:
+                # ── ERA-SPECIFIC FLOW ─────────────────────────────────────────
+                # Source: Discogs releases (style + year filter = temporal guarantee)
+                # No Last.fm expansion — avoids mainstream seed contamination
+                log.info(f"[Oracle] Era: '{style}' {decades}")
+                pool = _discogs_fetch_era_artists_bulk(discogs_styles, decades, max_artists=200)
 
-            # Fallback to MusicBrainz if both empty
-            if not pool:
-                log.info(f"[Oracle-POC] Last.fm empty — falling back to MusicBrainz")
-                pool = _mb_get_artists_by_genre(style, decades, limit=200)
+                if len(pool) < 15:
+                    log.info(f"[Oracle] Bulk thin ({len(pool)}) — adding _get_era_artists_from_discogs")
+                    pool += _get_era_artists_from_discogs(decades, "playlist", 100, discogs_styles)
+                    pool = list(dict.fromkeys(pool))  # dedup, preserve order
+
+                if len(pool) < 10:
+                    log.info(f"[Oracle] Still thin — Last.fm era fallback")
+                    pool += _get_era_artists_from_lastfm(style, decades, 100)
+                    pool = list(dict.fromkeys(pool))
+
+                # Cache-only MB filter: discard artists already known to be wrong era
+                dk = tuple(sorted(decades))
+                before = len(pool)
+                pool = [a for a in pool
+                        if (_seed_validation_cache.get((a.lower(), dk), (True,))[0] is not False)]
+                if before - len(pool):
+                    log.info(f"[Oracle] MB cache filtered {before - len(pool)} known-invalid artists")
+
+                random.shuffle(pool)
+                recent_set    = {normalize(r) for r in _recent_artists}
+                filtered_pool = [a for a in pool if normalize(a) not in recent_set] or pool
+                log.info(f"[Oracle] Era pool: {len(filtered_pool)} artists (no expansion)")
+
+            else:
+                # ── ALL TIME FLOW ─────────────────────────────────────────────
+                # Source: Discogs → Last.fm → MusicBrainz + underground filter
+                log.info(f"[Oracle] All Time: '{style}'")
+                pool = _get_era_artists_from_discogs(None, "playlist", 100, discogs_styles)
+                if not pool:
+                    pool = _get_era_artists_from_lastfm(style, None, 150)
+                if not pool:
+                    pool = _mb_get_artists_by_genre(style, None, 200)
+
+                random.shuffle(pool)
+                recent_set    = {normalize(r) for r in _recent_artists}
+                filtered_pool = [a for a in pool if normalize(a) not in recent_set]
+                if len(filtered_pool) < 10:
+                    filtered_pool = pool
+
+                if message:
+                    _safe_reply(message, "🔍 Filtering for quality…")
+                filtered_pool = _filter_underground_artists(filtered_pool, style, None)
+                if len(filtered_pool) < 10:
+                    cap_fallback = [a for a in pool
+                                    if 0 < _artist_listeners_cache.get(a, 0) <= 750_000]
+                    filtered_pool = cap_fallback if len(cap_fallback) >= 5 else pool
+                    log.info(f"[Oracle] Safety fallback: {len(filtered_pool)} artists")
 
             if _is_cancelled(chat_id):
                 _cancel_working(sent, timer)
                 return
 
-            random.shuffle(pool)
-            global _recent_artists
-            target        = GENRE_PLAYLIST_SIZE
-            recent_set    = {normalize(r) for r in _recent_artists}
-            filtered_pool = [a for a in pool if normalize(a) not in recent_set]
-            if len(filtered_pool) < 10:
-                filtered_pool = pool
-
-            # Underground filter: skip for era playlists — temporal validation already guarantees quality.
-            # Filtering here would eliminate correct but obscure artists (exactly what we want).
-            if decades:
-                log.info(f"[Underground] Era-specific mode {decades} — skipping filter (temporal validation sufficient)")
-                log.info(f"[Underground] Keeping all {len(filtered_pool)} artists from validated seeds + expansion")
-            else:
-                if message:
-                    _safe_reply(message, "🔍 Filtering for quality…")
-                filtered_pool = _filter_underground_artists(filtered_pool, style, decades)
-                if len(filtered_pool) < 10:
-                    # Safety fallback — cap at 750k; listeners==0 means unscored, skip (could be mainstream)
-                    cap_fallback = [a for a in pool
-                                    if 0 < _artist_listeners_cache.get(a, 0) <= 750_000]
-                    filtered_pool = cap_fallback if len(cap_fallback) >= 5 else pool
-                    log.info(f"[Oracle-POC] Safety fallback: {len(filtered_pool)} artists (cap applied)")
-
-            log.info(f"[Oracle-POC] Final pool: {len(filtered_pool)} artists for '{style}' {decades}")
+            log.info(f"[Oracle] Final pool: {len(filtered_pool)} artists for '{style}' {decades}")
 
             tracks             = []
             keys_added         = set()
