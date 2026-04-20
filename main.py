@@ -3967,8 +3967,21 @@ def _render_map(message, artist_query, chat_id):
 
     info = _get_artist_full_info(artist_query)
     log.info(f"[Card] '{artist_query}': discogs_styles={sorted_styles[:3]}, mb_country={info.get('country_code')}, begin={info.get('begin_year')}")
-    # Use ONLY Discogs styles as genres — single source of truth
-    info["genres"] = [s for s, _ in sorted_styles[:3]] if sorted_styles else []
+    # Discogs styles (count-weighted) are more reliable than MusicBrainz tags — always prefer them
+    if sorted_styles:
+        info["genres"] = [s for s, _ in sorted_styles[:3]]
+    # Last resort: if still no genres, pull Last.fm tags directly
+    if not info.get("genres"):
+        try:
+            lfm = lastfm("artist.getinfo", artist=info.get("official_name") or artist_query)
+            lfm_tags = lfm.get("artist", {}).get("tags", {}).get("tag", [])
+            info["genres"] = [
+                t["name"].title() for t in lfm_tags
+                if not any(c.isdigit() for c in t["name"]) and len(t["name"]) <= 28
+            ][:4]
+            log.info(f"[Card] Last.fm fallback genres for '{artist_query}': {info['genres']}")
+        except Exception as e:
+            log.error(f"[Card] Last.fm genre fallback: {e}")
 
     display_name   = _artist_display_name(info, artist_query)
     canonical_name = info.get("official_name") or artist_query
