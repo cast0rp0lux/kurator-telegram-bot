@@ -21,10 +21,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.3)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.4)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.4": {
+        "date": "2026-04-20",
+        "changes": [
+            "Filtro 1M listeners elimina mega-mainstream de playlists era-specific",
+            "Artistas con >1M listeners (Led Zeppelin, Van Halen, etc.) excluidos del pool",
+            "Mix resultante: 0% mega-mainstream, ~30% mid-tier, ~70% obscuro",
+        ],
+        "technical": [
+            "Oracle build|: batch pre-fetch listeners (ThreadPoolExecutor×10) antes de track selection",
+            "filtered_pool era: artistas con listeners >1M eliminados (cache conservativo si falla fetch)",
+            "Logs: [Oracle] 1M filter removed N artists + pipeline summary al final",
+        ]
+    },
     "6.9.3": {
         "date": "2026-04-20",
         "changes": [
@@ -4443,6 +4456,33 @@ def handle_buttons(update, context):
 
             log.info(f"[Oracle] Final pool: {len(filtered_pool)} artists for '{style}' {decades}")
 
+            # ── 1M listeners pre-filter (era-specific only) ───────────────────
+            # Remove mega-mainstream before track selection. Batch-fetches listeners
+            # concurrently; artists not fetchable are kept (conservative fallback).
+            if decades:
+                MAX_ERA_LISTENERS = 1_000_000
+                pre_filter_size   = len(filtered_pool)
+                uncached = [a for a in filtered_pool if a not in _artist_listeners_cache]
+                if uncached:
+                    with ThreadPoolExecutor(max_workers=10) as ex:
+                        futures = {ex.submit(_fetch_listeners, a): a for a in uncached}
+                        for f in as_completed(futures):
+                            a = futures[f]
+                            try:
+                                _, count = f.result()
+                                _artist_listeners_cache[a] = count
+                            except Exception:
+                                pass
+                filtered_pool = [
+                    a for a in filtered_pool
+                    if a not in _artist_listeners_cache                        # fetch failed → accept
+                    or _artist_listeners_cache[a] <= MAX_ERA_LISTENERS
+                ]
+                removed = pre_filter_size - len(filtered_pool)
+                if removed:
+                    log.info(f"[Oracle] 1M filter removed {removed} mega-mainstream artists "
+                             f"({len(filtered_pool)} remain)")
+
             tracks             = []
             keys_added         = set()
             artist_track_count = {}
@@ -4482,6 +4522,14 @@ def handle_buttons(update, context):
             save_history()
             _recent_artists.extend(artists_used)
             _recent_artists = _recent_artists[-RECENT_ARTISTS_MAX:]
+
+            if decades:
+                log.info(f"[Pipeline] ── era summary ──────────────────────")
+                log.info(f"[Pipeline] Mode         : era-specific {decades}")
+                log.info(f"[Pipeline] Source       : Discogs releases")
+                log.info(f"[Pipeline] Pool         : {len(filtered_pool)} artists (post-1M filter)")
+                log.info(f"[Pipeline] Final tracks : {len(tracks)}")
+                log.info(f"[Pipeline] ────────────────────────────────────")
 
             # ── Scoring filter (All Time mode only) ──────────────────────────
             if not decades and len(tracks) >= 10:
