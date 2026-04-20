@@ -21,10 +21,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.4)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.5)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.5": {
+        "date": "2026-04-20",
+        "changes": [
+            "Filtro de miembros de bandas mega-mainstream (Kiss, Led Zeppelin, Deep Purple, etc.)",
+            "Artistas en solitario como Ace Frehley, Paul Stanley, Robert Plant, etc. excluidos de era playlists",
+            "Nombres de banda también bloqueados si aparecen solos en el pool (e.g. 'Kiss', 'Led Zeppelin')",
+        ],
+        "technical": [
+            "MAINSTREAM_BAND_BLACKLIST: set de ~20 bandas mega-mainstream de rock clásico",
+            "MAINSTREAM_MEMBERS: set de ~50 nombres de miembros conocidos",
+            "_is_mainstream_artist_or_member(): detecta 'Band, Member' pattern + lookup directo",
+            "Oracle build|: filtro aplicado justo después del 1M listener filter en modo era",
+        ]
+    },
     "6.9.4": {
         "date": "2026-04-20",
         "changes": [
@@ -1809,6 +1823,70 @@ _STYLE_BLACKLIST = {
     "Neo-Psychedelia", "Psychedelic Pop", "Britpop", "Reggae-Pop",
     "Experimental", "Ambient", "Noise",
 }
+
+# Bands whose members should be filtered out of era playlists when appearing as solo artists
+MAINSTREAM_BAND_BLACKLIST = {
+    "kiss", "led zeppelin", "deep purple", "the who", "black sabbath",
+    "aerosmith", "van halen", "def leppard", "guns n' roses", "guns n roses",
+    "the rolling stones", "rolling stones", "the beatles", "beatles",
+    "pink floyd", "the doors", "doors", "fleetwood mac", "eagles",
+    "lynyrd skynyrd", "ac/dc", "queen", "yes", "emerson lake & palmer",
+    "emerson, lake & palmer", "rush", "boston", "journey", "foreigner",
+    "heart", "cheap trick", "thin lizzy", "uriah heep",
+}
+
+# Known solo-artist names of mainstream band members
+MAINSTREAM_MEMBERS = {
+    # Kiss
+    "ace frehley", "paul stanley", "gene simmons", "peter criss",
+    # Led Zeppelin
+    "robert plant", "jimmy page", "john paul jones",
+    # Deep Purple
+    "ritchie blackmore", "ian gillan", "roger glover", "jon lord", "david coverdale",
+    # Black Sabbath
+    "ozzy osbourne", "tony iommi", "geezer butler", "bill ward",
+    # The Who
+    "roger daltrey", "pete townshend", "john entwistle",
+    # Rolling Stones
+    "mick jagger", "keith richards", "ronnie wood", "charlie watts",
+    # Beatles
+    "john lennon", "paul mccartney", "george harrison", "ringo starr",
+    # Pink Floyd
+    "roger waters", "david gilmour", "syd barrett", "nick mason",
+    # Aerosmith
+    "steven tyler", "joe perry",
+    # Van Halen
+    "david lee roth", "eddie van halen", "alex van halen",
+    # Guns N' Roses
+    "axl rose", "slash", "duff mckagan", "izzy stradlin",
+    # Queen
+    "freddie mercury", "brian may",
+    # Eagles
+    "don henley", "joe walsh", "glenn frey",
+    # Fleetwood Mac
+    "stevie nicks", "lindsey buckingham",
+    # Lynyrd Skynyrd
+    "ronnie van zant",
+}
+
+
+def _is_mainstream_artist_or_member(artist: str) -> bool:
+    """Returns True if artist is a mega-mainstream band or a known member of one."""
+    lower = artist.lower().strip()
+    if lower in MAINSTREAM_BAND_BLACKLIST:
+        return True
+    if lower in MAINSTREAM_MEMBERS:
+        return True
+    # "Band, Member" or "Band - Member" patterns (e.g. "Kiss, Ace Frehley")
+    for sep in (", ", " - "):
+        if sep in artist:
+            parts = artist.split(sep, 1)
+            if parts[0].lower().strip() in MAINSTREAM_BAND_BLACKLIST:
+                return True
+            if parts[1].lower().strip() in MAINSTREAM_MEMBERS:
+                return True
+    return False
+
 
 def _discover_and_add_styles(artists):
     """
@@ -3889,8 +3967,21 @@ def _render_map(message, artist_query, chat_id):
 
     info = _get_artist_full_info(artist_query)
     log.info(f"[Card] '{artist_query}': discogs_styles={sorted_styles[:3]}, mb_country={info.get('country_code')}, begin={info.get('begin_year')}")
-    # Use ONLY Discogs styles as genres — single source of truth
-    info["genres"] = [s for s, _ in sorted_styles[:3]] if sorted_styles else []
+    # Discogs styles (count-weighted) are more reliable than MusicBrainz tags — always prefer them
+    if sorted_styles:
+        info["genres"] = [s for s, _ in sorted_styles[:3]]
+    # Last resort: if still no genres, pull Last.fm tags directly
+    if not info.get("genres"):
+        try:
+            lfm = lastfm("artist.getinfo", artist=info.get("official_name") or artist_query)
+            lfm_tags = lfm.get("artist", {}).get("tags", {}).get("tag", [])
+            info["genres"] = [
+                t["name"].title() for t in lfm_tags
+                if not any(c.isdigit() for c in t["name"]) and len(t["name"]) <= 28
+            ][:4]
+            log.info(f"[Card] Last.fm fallback genres for '{artist_query}': {info['genres']}")
+        except Exception as e:
+            log.error(f"[Card] Last.fm genre fallback: {e}")
 
     display_name   = _artist_display_name(info, artist_query)
     canonical_name = info.get("official_name") or artist_query
@@ -4481,6 +4572,14 @@ def handle_buttons(update, context):
                 removed = pre_filter_size - len(filtered_pool)
                 if removed:
                     log.info(f"[Oracle] 1M filter removed {removed} mega-mainstream artists "
+                             f"({len(filtered_pool)} remain)")
+
+                # Mainstream band/member filter
+                pre_member_size = len(filtered_pool)
+                filtered_pool = [a for a in filtered_pool if not _is_mainstream_artist_or_member(a)]
+                removed_members = pre_member_size - len(filtered_pool)
+                if removed_members:
+                    log.info(f"[Oracle] Mainstream member filter removed {removed_members} artists "
                              f"({len(filtered_pool)} remain)")
 
             tracks             = []
