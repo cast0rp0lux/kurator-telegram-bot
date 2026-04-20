@@ -1700,6 +1700,7 @@ _artist_image_cache = {}
 
 def _get_artist_image(artist):
     """Return artist photo as square 600×600 JPEG bytes, or None."""
+    log.info(f"[Image] >>> CALLED with artist='{artist}'")
     if artist in _artist_image_cache:
         return _artist_image_cache[artist]
     _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
