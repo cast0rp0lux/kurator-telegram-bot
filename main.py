@@ -21,10 +21,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.7)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.8)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.8": {
+        "date": "2026-04-25",
+        "changes": [
+            "Fix: fotos de artistas con 'The' (The Wedding Present, The Who, etc.)",
+            "MusicBrainz canonical name usado para imagen en vez de nombre LFM corto",
+            "Ej: 'wedding present' → LFM 'Wedding Present' → MB 'The Wedding Present' → foto ✓",
+        ],
+        "technical": [
+            "_render_map: _get_artist_image usa canonical_name (MB) en vez de artist_query (LFM)",
+            "map_memory['artist'] guarda canonical_name para que Back navigation funcione igual",
+            "Log [Card] Canonical for image muestra ambos nombres para debugging",
+        ]
+    },
     "6.9.7": {
         "date": "2026-04-25",
         "changes": [
@@ -4012,15 +4025,15 @@ def _render_map(message, artist_query, chat_id):
             log.error(f"[Card] Last.fm genre fallback: {e}")
 
     display_name   = _artist_display_name(info, artist_query)
+    # MB official_name is more complete (e.g. "The Wedding Present" vs LFM "Wedding Present")
     canonical_name = info.get("official_name") or artist_query
-    # artist_query is the LFM canonical spelling — use it for image since Last.fm
-    # page URLs are keyed on LFM canonical, not MusicBrainz official name.
-    log.info(f"[Image] Fetching for canonical: '{artist_query}'")
-    img_bytes      = _get_artist_image(artist_query)
+    log.info(f"[Card] Canonical for image: '{canonical_name}' (MB: '{info.get('official_name')}', LFM: '{artist_query}')")
+    log.info(f"[Image] Fetching for canonical: '{canonical_name}'")
+    img_bytes      = _get_artist_image(canonical_name)
     has_photo      = img_bytes is not None
 
     map_memory[chat_id] = {
-        "artist":       artist_query,   # LFM canonical — needed for image fetching in Back nav
+        "artist":       canonical_name,  # MB canonical — has "The", correct spelling
         "display_name": display_name,
         "styles":       sorted_styles,
         "info":         info,
