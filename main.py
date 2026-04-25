@@ -30,12 +30,12 @@ CHANGELOG = {
         "changes": [
             "Fix: fotos de artistas con 'The' (The Wedding Present, The Who, etc.)",
             "MusicBrainz canonical name usado para imagen en vez de nombre LFM corto",
-            "Ej: 'wedding present' → LFM 'Wedding Present' → MB 'The Wedding Present' → foto ✓",
+            "Fallback a portada de top álbum si no hay foto principal del artista",
         ],
         "technical": [
             "_render_map: _get_artist_image usa canonical_name (MB) en vez de artist_query (LFM)",
-            "map_memory['artist'] guarda canonical_name para que Back navigation funcione igual",
-            "Log [Card] Canonical for image muestra ambos nombres para debugging",
+            "_get_artist_image: paso 3 = artist.gettopalbums cover antes de Wikipedia fallback",
+            "Orden: API images → page scrape → album cover → Wikipedia",
         ]
     },
     "6.9.7": {
@@ -1795,7 +1795,27 @@ def _get_artist_image(artist):
         except Exception as e:
             log.error(f"Last.fm page scrape for '{artist}': {e}")
 
-    # ── 2) Wikipedia fallback ──────────────────────────────────────────────────
+    # ── 3) Top album cover fallback ───────────────────────────────────────────
+    if not img_url:
+        try:
+            albums_data = lastfm("artist.gettopalbums", artist=artist, limit=1)
+            albums = albums_data.get("topalbums", {}).get("album", [])
+            top = albums[0] if isinstance(albums, list) and albums else None
+            if top:
+                for size in ["extralarge", "large", "medium"]:
+                    for img in top.get("image", []):
+                        if img.get("size") == size and img.get("#text"):
+                            url = img["#text"]
+                            if _PLACEHOLDER not in url:
+                                img_url = url
+                                log.info(f"[Image] Album cover fallback '{top.get('name','')}' for '{artist}'")
+                                break
+                    if img_url:
+                        break
+        except Exception as e:
+            log.error(f"Last.fm top albums for '{artist}': {e}")
+
+    # ── 4) Wikipedia fallback ──────────────────────────────────────────────────
     if not img_url:
         try:
             wp = requests.get(
