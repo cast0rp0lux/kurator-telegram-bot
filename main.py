@@ -21,23 +21,10 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.7)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.6)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
-    "6.9.7": {
-        "date": "2026-04-25",
-        "changes": [
-            "Top 3 Discogs styles ahora aparecen como botones directos en tarjeta de artista",
-            "Tap en style → era selection → playlist (sin pasar por lista de styles)",
-            "Botón 'More Styles' aparece solo si hay más de 3 styles disponibles",
-        ],
-        "technical": [
-            "_build_map_buttons: top 3 sorted_styles como botones individuales (map_style callback)",
-            "Botones en fila de 2; si hay >3 styles, añade 'More Styles' link a paginación",
-            "Reutiliza map_style → _genre_era_prompt → build| flow existente",
-        ]
-    },
     "6.9.6": {
         "date": "2026-04-20",
         "changes": [
@@ -4076,25 +4063,12 @@ def _build_map_buttons(display_name, sorted_styles, info, chat_id):
         callback_data=safe_callback(f"map_similar|{display_name}")
     )])
 
-    # Top 3 styles as direct playlist-trigger buttons (rows of 2)
+    # Styles button
     if sorted_styles:
-        top = sorted_styles[:3]
-        row: list = []
-        for style, _count in top:
-            row.append(InlineKeyboardButton(
-                f"🎸 {style}",
-                callback_data=safe_callback(f"map_style|{style}")
-            ))
-            if len(row) == 2:
-                buttons.append(row)
-                row = []
-        if row:
-            buttons.append(row)
-        if len(sorted_styles) > 3:
-            buttons.append([InlineKeyboardButton(
-                f"🏷️ More Styles ({len(sorted_styles) - 3} more)",
-                callback_data=f"map_styles|{chat_id}|0"
-            )])
+        buttons.append([InlineKeyboardButton(
+            f"🏷️ Styles ({len(sorted_styles)})",
+            callback_data=f"map_styles|{chat_id}|0"
+        )])
 
     buttons.append([InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")])
     return buttons
