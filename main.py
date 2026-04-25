@@ -28,11 +28,10 @@ CHANGELOG = {
     "6.9.7": {
         "date": "2026-04-25",
         "changes": [
-            "Top 3 Discogs styles como botones directos en tarjeta de artista",
-            "Tap en style desde la tarjeta → era picker → playlist (sin pasos extra)",
+            "Styles en tarjeta de artista generan playlist al hacer tap",
+            "Tap en style → era picker → playlist",
         ],
         "technical": [
-            "_build_map_buttons: top 3 sorted_styles como botones individuales en filas de 2",
             "map_style handler: usa _edit_card_message en vez de query.edit_message_text",
             "Fix: query.edit_message_text falla en foto-tarjetas; _edit_card_message maneja ambos",
         ]
@@ -4075,25 +4074,12 @@ def _build_map_buttons(display_name, sorted_styles, info, chat_id):
         callback_data=safe_callback(f"map_similar|{display_name}")
     )])
 
-    # Top 3 styles as direct playlist buttons (rows of 2), rest via "More Styles"
+    # Styles button
     if sorted_styles:
-        top = sorted_styles[:3]
-        row: list = []
-        for style, _count in top:
-            row.append(InlineKeyboardButton(
-                f"🎸 {style}",
-                callback_data=safe_callback(f"map_style|{style}")
-            ))
-            if len(row) == 2:
-                buttons.append(row)
-                row = []
-        if row:
-            buttons.append(row)
-        if len(sorted_styles) > 3:
-            buttons.append([InlineKeyboardButton(
-                f"🏷️ More Styles ({len(sorted_styles) - 3} more)",
-                callback_data=f"map_styles|{chat_id}|0"
-            )])
+        buttons.append([InlineKeyboardButton(
+            f"🏷️ Styles ({len(sorted_styles)})",
+            callback_data=f"map_styles|{chat_id}|0"
+        )])
 
     buttons.append([InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")])
     return buttons
