@@ -4164,21 +4164,25 @@ def _render_map(message, artist_query, chat_id):
     if has_photo:
         try:
             import io as _io
-            message.reply_photo(
+            sent = message.reply_photo(
                 photo=_io.BytesIO(img_bytes),
                 caption=card_text,
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
+            map_memory[chat_id]["message_id"] = sent.message_id
+            save_map_memory()
             return
         except Exception as e:
             log.warning(f"[Card] reply_photo failed for {artist_query}: {e}")
             map_memory[chat_id]["has_photo"] = False
             save_map_memory()
 
-    message.reply_text(
+    sent = message.reply_text(
         card_text,
         reply_markup=InlineKeyboardMarkup(buttons)
     )
+    map_memory[chat_id]["message_id"] = sent.message_id
+    save_map_memory()
 
 def _build_map_buttons(display_name, sorted_styles, info, chat_id):
     buttons = []
@@ -4465,7 +4469,7 @@ def handle_buttons(update, context):
             if not discoveries:
                 _edit_card_message(
                     query, chat_id,
-                    "🎲 <b>Today's Discovery</b>\n\n"
+                    "🎲 Today's Discovery\n\n"
                     "Start exploring artists to get personalized recommendations!\n\n"
                     "💡 Use <b>🧭 Free Explore</b> or <b>✦ Kurator's Picks</b> to build your profile.",
                     InlineKeyboardMarkup([[InlineKeyboardButton("← Back to Menu", callback_data="cmd|menu")]])
@@ -4478,7 +4482,7 @@ def handle_buttons(update, context):
                     f"{i}. {name}",
                     callback_data=safe_callback(f"discovery_artist|{name}")
                 )])
-            lines = ["🎲 <b>Today's Discovery</b>"]
+            lines = ["🎲 Today's Discovery"]
             buttons.append([
                 InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
                 InlineKeyboardButton("← Menu",     callback_data="cmd|menu"),
@@ -5103,11 +5107,13 @@ def handle_buttons(update, context):
         artist = canonical or value
         log.info(f"[Discovery] Exploring artist: '{artist}'")
         _nav_history.pop(chat_id, None)
-        # Delete the discovery list before showing the artist card
-        try:
-            query.message.delete()
-        except Exception:
-            pass
+        # Delete the previous artist card (not the discovery list)
+        prev_msg_id = map_memory.get(chat_id, {}).get("message_id")
+        if prev_msg_id:
+            try:
+                message.bot.delete_message(chat_id=chat_id, message_id=prev_msg_id)
+            except Exception:
+                pass
         exp_msg = message.reply_text(f"🧑‍🎤 Exploring {artist.upper()}…")
         _render_map(message, artist, chat_id)
         try:
@@ -5646,7 +5652,7 @@ def discovery_command(update, context):
     discoveries = _generate_daily_discoveries(force_new=False)
     if not discoveries:
         msg.reply_text(
-            "🎲 <b>Today's Discovery</b>\n\n"
+            "🎲 Today's Discovery\n\n"
             "Start exploring artists to get personalized recommendations!\n\n"
             "💡 Use /artist or /genre to build your listening profile.",
             parse_mode="HTML",
@@ -5663,7 +5669,7 @@ def discovery_command(update, context):
             f"{i}. {name}",
             callback_data=safe_callback(f"discovery_artist|{name}")
         )])
-    lines = ["🎲 <b>Today's Discovery</b>"]
+    lines = ["🎲 Today's Discovery"]
     buttons.append([
         InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
         InlineKeyboardButton("← Menu",     callback_data="cmd|menu"),
