@@ -4552,7 +4552,7 @@ def handle_buttons(update, context):
             lines = ["🎲 Today's Discovery"]
             buttons.append([
                 InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
-                InlineKeyboardButton("← Menu",     callback_data="cmd|menu"),
+                InlineKeyboardButton("← Back",     callback_data="cmd|explore_menu"),
             ])
             disc_text  = "\n".join(lines)
             disc_markup = InlineKeyboardMarkup(buttons)
@@ -5747,7 +5747,7 @@ def discovery_command(update, context):
     lines = ["🎲 Today's Discovery"]
     buttons.append([
         InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
-        InlineKeyboardButton("← Menu",     callback_data="cmd|menu"),
+        InlineKeyboardButton("← Back",     callback_data="cmd|explore_menu"),
     ])
     msg.reply_text(
         "\n".join(lines),
