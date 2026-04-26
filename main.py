@@ -4648,7 +4648,22 @@ def handle_buttons(update, context):
             )
 
         elif value == "tags":
-            _render_tags(message, page=0)
+            all_tags    = _get_all_tags_sorted()
+            sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
+            if not sorted_tags:
+                query.edit_message_text(
+                    "No tags collected yet.\n\n"
+                    "Tags build up automatically as you use Kurator.\n\n"
+                    "— /artist <name> — explore an artist and collect their genres\n"
+                    "— /genre — play a genre playlist",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="cmd|explore_menu")]])
+                )
+                return
+            total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
+            query.edit_message_text(
+                f"🏷️ Tag collection — {len(sorted_tags)} genres (page 1/{total_pages})",
+                reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, 0, chat_id=chat_id))
+            )
 
         elif value == "status":
             visible = [(t, c) for t, c in _get_all_tags_sorted() if _is_valid_tag(t)]
@@ -5550,7 +5565,13 @@ def handle_buttons(update, context):
         if to_restore:
             save_tag_index()
             save_tag_blacklist()
-        _render_tags(message, page=0, chat_id=chat_id)
+        all_tags    = _get_all_tags_sorted()
+        sorted_tags = [(t, c) for t, c in all_tags if _is_valid_tag(t)]
+        total_pages = max(1, (len(sorted_tags)-1) // TAGS_PAGE_SIZE + 1)
+        query.edit_message_text(
+            f"🏷️ Tag collection — {len(sorted_tags)} genres (page 1/{total_pages})",
+            reply_markup=InlineKeyboardMarkup(_build_tags_buttons(sorted_tags, 0, chat_id=chat_id))
+        )
 
     # ── tag_reset_confirm: show full-reset warning ────────────────────────────
     elif action == "tag_reset_confirm":
