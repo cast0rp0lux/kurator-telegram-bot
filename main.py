@@ -21,10 +21,22 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.11)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.12)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.12": {
+        "date": "2026-04-26",
+        "changes": [
+            "Foto de artista: galería /+images primero (fotos reales, nunca portadas de disco)",
+            "Fallback 2: background-image de la página principal, luego og:image",
+            "og:image puede ser portada de álbum cuando el artista no tiene fotos → ahora es último recurso",
+        ],
+        "technical": [
+            "_get_artist_image: step 1=getinfo, step 2=gallery /+images, step 3=_bg/_og main page, step 4=api_images, step 5=album cover, step 6=Wikipedia",
+            "_first_cdn: filtra thumbnails pequeños (URLs con /NN[sx]/) para evitar iconos de UI",
+        ]
+    },
     "6.9.11": {
         "date": "2026-04-26",
         "changes": [
@@ -1868,6 +1880,8 @@ def _get_artist_image(artist):
         for m in re.finditer(r'https://lastfm\.freetls\.fastly\.net/i/u/[^\s"\'<>\\]+', html):
             url = m.group(0).replace("\\/", "/").split("?")[0].rstrip(".,;")
             if _PLACEHOLDER not in url and re.search(r'\.(jpg|jpeg|png)$', url, re.I):
+                if re.search(r'/\d{1,2}[sx]/', url):  # skip icon-sized thumbnails
+                    continue
                 return _norm_size(url)
         return None
 
@@ -1883,26 +1897,26 @@ def _get_artist_image(artist):
     except Exception as e:
         log.error(f"Last.fm getinfo for '{artist}': {e}")
 
-    # ── 2) Main artist photo — og:image of the LFM artist page (header photo) ─
-    if not img_url and lfm_url:
-        try:
-            html    = requests.get(lfm_url, timeout=8, headers=_HEADERS).text
-            img_url = _og(html) or _bg(html)
-            if img_url:
-                log.info(f"[Image] Main artist photo (og:image) for '{artist}'")
-        except Exception as e:
-            log.error(f"Last.fm page scrape for '{artist}': {e}")
-
-    # ── 3) First photo from artist gallery (/+images) ─────────────────────────
+    # ── 2) Artist photo gallery (/+images) — real artist photos, not album covers ─
     if not img_url and lfm_url:
         try:
             gallery = requests.get(lfm_url.rstrip("/") + "/+images",
                                    timeout=8, headers=_HEADERS).text
-            img_url = _first_cdn(gallery) or _og(gallery)
+            img_url = _first_cdn(gallery)
             if img_url:
                 log.info(f"[Image] Gallery photo for '{artist}'")
         except Exception as e:
             log.error(f"Last.fm gallery scrape for '{artist}': {e}")
+
+    # ── 3) Main artist page: background-image header photo, then og:image ─────
+    if not img_url and lfm_url:
+        try:
+            html    = requests.get(lfm_url, timeout=8, headers=_HEADERS).text
+            img_url = _bg(html) or _og(html)
+            if img_url:
+                log.info(f"[Image] Page photo (bg/og) for '{artist}'")
+        except Exception as e:
+            log.error(f"Last.fm page scrape for '{artist}': {e}")
 
     # ── 4) LFM API images (deprecated fallback) ───────────────────────────────
     if not img_url:
