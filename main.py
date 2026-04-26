@@ -21,10 +21,22 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.15)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.16)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.16": {
+        "date": "2026-04-26",
+        "changes": [
+            "Hotfix: error handler global — el bot ya no cae ante excepciones no capturadas",
+            "MusicBrainz timeout reducido de 10s a 3s",
+            "MusicBrainz retries reducidos de 3 a 2 intentos",
+        ],
+        "technical": [
+            "dp.add_error_handler(error_handler) — captura cualquier excepción en handlers",
+            "_mb_get: timeout=3, range(2), attempt < 1",
+        ]
+    },
     "6.9.15": {
         "date": "2026-04-26",
         "changes": [
@@ -3315,7 +3327,7 @@ _mb_last_call = 0.0
 def _mb_get(path, params=None):
     """Generic MusicBrainz GET — globally rate-limited to 1 req/s with retry."""
     global _mb_last_call
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             with _mb_lock:
                 # Enforce 1 req/s globally across all threads
@@ -3329,7 +3341,7 @@ def _mb_get(path, params=None):
                 f"https://musicbrainz.org/ws/2/{path}",
                 params={**(params or {}), "fmt": "json"},
                 headers={"User-Agent": MB_USER_AGENT},
-                timeout=10
+                timeout=3
             )
             if r.status_code == 200:
                 return r.json()
@@ -3341,7 +3353,7 @@ def _mb_get(path, params=None):
             return {}
         except Exception as e:
             log.error(f"MusicBrainz error {path} (attempt {attempt+1}): {e}")
-            if attempt < 2:
+            if attempt < 1:
                 time.sleep(2 ** attempt)
     return {}
 
@@ -5853,6 +5865,23 @@ dp.add_handler(CommandHandler("reset",    reset))
 dp.add_handler(CommandHandler("cancel",   cancel_command))  # oculto — no en set_my_commands
 dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text_reply))
 dp.add_handler(CallbackQueryHandler(handle_buttons))
+
+def error_handler(update, context):
+    """Global error handler — logs exception and notifies user without crashing the bot."""
+    try:
+        log.error(f"Update {update} caused error: {context.error}", exc_info=context.error)
+        if update and update.effective_chat:
+            try:
+                context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="⚠️ An error occurred. Please try again or use /start to return to the menu."
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        log.error(f"Error in error_handler: {e}")
+
+dp.add_error_handler(error_handler)
 
 # Registrar comandos para activar el botón ☰ nativo de Telegram
 from telegram import BotCommand
