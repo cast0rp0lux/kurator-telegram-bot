@@ -4471,15 +4471,14 @@ def handle_buttons(update, context):
                     InlineKeyboardMarkup([[InlineKeyboardButton("← Back to Menu", callback_data="cmd|menu")]])
                 )
                 return
-            lines = ["🎲 <b>Today's Discovery</b>\n\n15 artists based on your recent listening:\n"]
             buttons = []
             for i, d in enumerate(discoveries, 1):
                 name = d["name"]
-                lines.append(f"{i}. {name}")
                 buttons.append([InlineKeyboardButton(
                     f"{i}. {name}",
                     callback_data=safe_callback(f"discovery_artist|{name}")
                 )])
+            lines = ["🎲 <b>Today's Discovery</b>"]
             buttons.append([
                 InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
                 InlineKeyboardButton("← Menu",     callback_data="cmd|menu"),
@@ -5104,6 +5103,11 @@ def handle_buttons(update, context):
         artist = canonical or value
         log.info(f"[Discovery] Exploring artist: '{artist}'")
         _nav_history.pop(chat_id, None)
+        # Delete the discovery list before showing the artist card
+        try:
+            query.message.delete()
+        except Exception:
+            pass
         exp_msg = message.reply_text(f"🧑‍🎤 Exploring {artist.upper()}…")
         _render_map(message, artist, chat_id)
         try:
@@ -5652,15 +5656,14 @@ def discovery_command(update, context):
             ]])
         )
         return
-    lines = ["🎲 <b>Today's Discovery</b>\n\n15 artists based on your recent listening:\n"]
     buttons = []
     for i, d in enumerate(discoveries, 1):
         name = d["name"]
-        lines.append(f"{i}. {name}")
         buttons.append([InlineKeyboardButton(
             f"{i}. {name}",
             callback_data=safe_callback(f"discovery_artist|{name}")
         )])
+    lines = ["🎲 <b>Today's Discovery</b>"]
     buttons.append([
         InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
         InlineKeyboardButton("← Menu",     callback_data="cmd|menu"),
