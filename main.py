@@ -21,10 +21,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.8)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.9)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.9": {
+        "date": "2026-04-25",
+        "changes": [
+            "🎲 Today's Discovery: 15 artistas diarios personalizados basados en escucha reciente",
+            "Botón en menú principal; cache 24h; botón Get New para regenerar",
+            "Cada artista es clickable → tarjeta de artista directa",
+        ],
+        "technical": [
+            "DISCOVERY_CACHE_FILE: discovery_cache.json con fecha + lista de artistas",
+            "_generate_daily_discoveries(): seeds de extract_seed_artists() + expand_artist_graph()",
+            "Filtro 1M listeners; sweet spot bonus 200K-800K; shuffle top 30, selecciona 15",
+            "Handlers: cmd|discovery, cmd|discovery_refresh, discovery_artist|{name}",
+        ]
+    },
     "6.9.8": {
         "date": "2026-04-25",
         "changes": [
@@ -576,7 +590,8 @@ def _unregister_timer(chat_id):
     _active_timers.pop(chat_id, None)
 
 # ─── File paths ───────────────────────────────────────────────────────────────
-HISTORY_FILE   = "history.json"
+HISTORY_FILE        = "history.json"
+DISCOVERY_CACHE_FILE = "discovery_cache.json"
 TAG_INDEX_FILE = "tag_index.json"
 MAP_FILE       = "map_memory.json"
 ONBOARDED_FILE = "onboarded.json"
@@ -897,6 +912,75 @@ def extract_seed_artists():
         if artist:
             counter[artist] += 1
     return [a for a, _ in counter.most_common(SEED_ARTISTS)]
+
+# ─── Daily Discovery ──────────────────────────────────────────────────────────
+
+def _generate_daily_discoveries(force_new=False):
+    """15 personalized artist recommendations from recent scrobbles. Cached 24h."""
+    from datetime import date as _date
+    import random as _random
+    today = str(_date.today())
+
+    if not force_new:
+        try:
+            with open(DISCOVERY_CACHE_FILE, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+            if cache.get("date") == today:
+                log.info(f"[Discovery] Cache hit for {today}")
+                return cache.get("discoveries") or None
+        except Exception:
+            pass
+
+    log.info(f"[Discovery] Generating for {today}")
+
+    seeds = extract_seed_artists()
+    if len(seeds) < 5:
+        log.info(f"[Discovery] Not enough seeds ({len(seeds)})")
+        return None
+
+    # Expand via similar artists — count co-occurrences
+    candidates: dict = {}
+    for seed in seeds[:20]:
+        try:
+            names = _fetch_similar_names(seed)
+            for name in names:
+                if name not in seeds:
+                    candidates[name] = candidates.get(name, 0) + 1
+        except Exception:
+            continue
+
+    log.info(f"[Discovery] {len(candidates)} candidates before filter")
+
+    # Score + filter
+    scored = []
+    for artist, freq in candidates.items():
+        try:
+            _, listeners = _fetch_listeners(artist)
+            if listeners > 1_000_000:
+                continue
+            if _is_mainstream_artist_or_member(artist):
+                continue
+            bonus = 2 if 200_000 <= listeners <= 800_000 else 0
+            scored.append({"name": artist, "listeners": listeners,
+                           "score": freq + bonus})
+        except Exception:
+            continue
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    pool = scored[:30]
+    _random.shuffle(pool)
+    discoveries = [{"name": d["name"]} for d in pool[:15]]
+
+    log.info(f"[Discovery] Selected {len(discoveries)}")
+    try:
+        with open(DISCOVERY_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"date": today, "discoveries": discoveries}, f,
+                      ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning(f"[Discovery] Cache write failed: {e}")
+
+    return discoveries or None
+
 
 # ─── Artist graph expansion ───────────────────────────────────────────────────
 
@@ -3735,6 +3819,7 @@ def main_menu_markup():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✦ Kurator's Picks", callback_data="cmd|picks_menu")],
         [InlineKeyboardButton("🧭 Free Explore",   callback_data="cmd|explore_menu")],
+        [InlineKeyboardButton("🎲 Today's Discovery", callback_data="cmd|discovery")],
         [InlineKeyboardButton("────────────────────────────────────", callback_data="noop")],
         [
             InlineKeyboardButton("📊 Status", callback_data="cmd|status"),
@@ -4359,6 +4444,41 @@ def handle_buttons(update, context):
                 ])
             )
 
+        elif value in ("discovery", "discovery_refresh"):
+            force = (value == "discovery_refresh")
+            if force:
+                query.answer("🔄 Generating new discoveries…")
+            discoveries = _generate_daily_discoveries(force_new=force)
+            if not discoveries:
+                query.edit_message_text(
+                    "🎲 <b>Today's Discovery</b>\n\n"
+                    "Start exploring artists to get personalized recommendations!\n\n"
+                    "💡 Use <b>🧭 Free Explore</b> or <b>✦ Kurator's Picks</b> to build your profile.",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("← Back to Menu", callback_data="cmd|menu")
+                    ]])
+                )
+                return
+            lines = ["🎲 <b>Today's Discovery</b>\n\n15 artists based on your recent listening:\n"]
+            buttons = []
+            for i, d in enumerate(discoveries, 1):
+                name = d["name"]
+                lines.append(f"{i}. {name}")
+                buttons.append([InlineKeyboardButton(
+                    f"{i}. {name}",
+                    callback_data=safe_callback(f"discovery_artist|{name}")
+                )])
+            buttons.append([
+                InlineKeyboardButton("🔄 Get New",  callback_data="cmd|discovery_refresh"),
+                InlineKeyboardButton("← Menu",      callback_data="cmd|menu"),
+            ])
+            query.edit_message_text(
+                "\n".join(lines),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+
         elif value == "playlist":
             _pending_decades.pop(chat_id, None)
             _show_era_choice(query, chat_id, "🎧 Kurator's Playlist", "playlist", "cmd|picks_menu")
@@ -4956,6 +5076,19 @@ def handle_buttons(update, context):
         _render_map(message, new_artist, chat_id)
         try:
             _exp_msg.delete()
+        except Exception:
+            pass
+
+    # ── discovery_artist: open artist card from Today's Discovery ─────────────
+    elif action == "discovery_artist":
+        canonical, _ = _search_artist_flexible(value)
+        artist = canonical or value
+        log.info(f"[Discovery] Exploring artist: '{artist}'")
+        _nav_history.pop(chat_id, None)
+        exp_msg = message.reply_text(f"🧑‍🎤 Exploring {artist.upper()}…")
+        _render_map(message, artist, chat_id)
+        try:
+            exp_msg.delete()
         except Exception:
             pass
 
