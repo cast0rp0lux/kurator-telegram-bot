@@ -21,10 +21,21 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.13)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.14)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.14": {
+        "date": "2026-04-26",
+        "changes": [
+            "Loading message en Today's Discovery: '🎲 Analyzing your listening history / 🎲 Finding similar artists'",
+            "Aparece en cmd|discovery, cmd|discovery_refresh y /discovery antes de la generación lenta",
+        ],
+        "technical": [
+            "callback: _edit_card_message con markup=None muestra loading antes de _generate_daily_discoveries",
+            "discovery_command: loading = msg.reply_text(...) → loading.delete() tras generación",
+        ]
+    },
     "6.9.13": {
         "date": "2026-04-26",
         "changes": [
@@ -4512,6 +4523,15 @@ def handle_buttons(update, context):
 
         elif value in ("discovery", "discovery_refresh"):
             force = (value == "discovery_refresh")
+            try:
+                _edit_card_message(
+                    query, chat_id,
+                    "🎲 Analyzing your listening history\n"
+                    "🎲 Finding similar artists",
+                    None
+                )
+            except Exception:
+                pass
             discoveries = _generate_daily_discoveries(force_new=force)
             if not discoveries:
                 _edit_card_message(
@@ -5696,7 +5716,15 @@ log.info("Flask OAuth server started on port 8080")
 def discovery_command(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
+    loading = msg.reply_text(
+        "🎲 Analyzing your listening history\n"
+        "🎲 Finding similar artists"
+    )
     discoveries = _generate_daily_discoveries(force_new=False)
+    try:
+        loading.delete()
+    except Exception:
+        pass
     if not discoveries:
         msg.reply_text(
             "🎲 Today's Discovery\n\n"
