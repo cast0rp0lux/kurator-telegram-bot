@@ -21,10 +21,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.9)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.10)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.10": {
+        "date": "2026-04-25",
+        "changes": [
+            "Today's Discovery movido a menú Free Explore (antes estaba en menú principal)",
+            "Añadido comando /discovery con registro en Telegram BotCommand",
+            "Fix: botón 'Get New' usa _edit_card_message para evitar crash en foto-tarjetas",
+        ],
+        "technical": [
+            "discovery_command(): función independiente para handler /discovery",
+            "cmd|discovery handler: _edit_card_message en vez de query.edit_message_text directo",
+            "Fallback: si edit falla, borra mensaje y envía uno nuevo",
+        ]
+    },
     "6.9.9": {
         "date": "2026-04-25",
         "changes": [
@@ -3819,7 +3832,6 @@ def main_menu_markup():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✦ Kurator's Picks", callback_data="cmd|picks_menu")],
         [InlineKeyboardButton("🧭 Free Explore",   callback_data="cmd|explore_menu")],
-        [InlineKeyboardButton("🎲 Today's Discovery", callback_data="cmd|discovery")],
         [InlineKeyboardButton("────────────────────────────────────", callback_data="noop")],
         [
             InlineKeyboardButton("📊 Status", callback_data="cmd|status"),
@@ -4440,6 +4452,7 @@ def handle_buttons(update, context):
                     [InlineKeyboardButton("🧑‍🎤 Artist",              callback_data="cmd|map_prompt")],
                     [InlineKeyboardButton("🎸 Play a genre",       callback_data="cmd|genre_prompt")],
                     [InlineKeyboardButton("🏷️ My tag collection",  callback_data="cmd|tags")],
+                    [InlineKeyboardButton("🎲 Today's Discovery",  callback_data="cmd|discovery")],
                     [InlineKeyboardButton("← Back", callback_data="cmd|menu")],
                 ])
             )
@@ -4450,14 +4463,12 @@ def handle_buttons(update, context):
                 query.answer("🔄 Generating new discoveries…")
             discoveries = _generate_daily_discoveries(force_new=force)
             if not discoveries:
-                query.edit_message_text(
+                _edit_card_message(
+                    query, chat_id,
                     "🎲 <b>Today's Discovery</b>\n\n"
                     "Start exploring artists to get personalized recommendations!\n\n"
                     "💡 Use <b>🧭 Free Explore</b> or <b>✦ Kurator's Picks</b> to build your profile.",
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("← Back to Menu", callback_data="cmd|menu")
-                    ]])
+                    InlineKeyboardMarkup([[InlineKeyboardButton("← Back to Menu", callback_data="cmd|menu")]])
                 )
                 return
             lines = ["🎲 <b>Today's Discovery</b>\n\n15 artists based on your recent listening:\n"]
@@ -4470,14 +4481,22 @@ def handle_buttons(update, context):
                     callback_data=safe_callback(f"discovery_artist|{name}")
                 )])
             buttons.append([
-                InlineKeyboardButton("🔄 Get New",  callback_data="cmd|discovery_refresh"),
-                InlineKeyboardButton("← Menu",      callback_data="cmd|menu"),
+                InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
+                InlineKeyboardButton("← Menu",     callback_data="cmd|menu"),
             ])
-            query.edit_message_text(
-                "\n".join(lines),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
+            disc_text  = "\n".join(lines)
+            disc_markup = InlineKeyboardMarkup(buttons)
+            # Use _edit_card_message to handle photo vs text cards safely
+            try:
+                _edit_card_message(query, chat_id, disc_text, disc_markup)
+            except Exception:
+                # Fallback: send as new message
+                try:
+                    query.message.delete()
+                except Exception:
+                    pass
+                message.reply_text(disc_text, parse_mode="HTML",
+                                   reply_markup=disc_markup)
 
         elif value == "playlist":
             _pending_decades.pop(chat_id, None)
@@ -5617,6 +5636,41 @@ dp       = updater.dispatcher
 threading.Thread(target=_start_flask, daemon=True).start()
 log.info("Flask OAuth server started on port 8080")
 
+def discovery_command(update, context):
+    msg     = update.message
+    chat_id = update.effective_chat.id
+    discoveries = _generate_daily_discoveries(force_new=False)
+    if not discoveries:
+        msg.reply_text(
+            "🎲 <b>Today's Discovery</b>\n\n"
+            "Start exploring artists to get personalized recommendations!\n\n"
+            "💡 Use /artist or /genre to build your listening profile.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🧑‍🎤 Artist",    callback_data="cmd|map_prompt"),
+                InlineKeyboardButton("🎸 Play Genre", callback_data="cmd|genre_prompt"),
+            ]])
+        )
+        return
+    lines = ["🎲 <b>Today's Discovery</b>\n\n15 artists based on your recent listening:\n"]
+    buttons = []
+    for i, d in enumerate(discoveries, 1):
+        name = d["name"]
+        lines.append(f"{i}. {name}")
+        buttons.append([InlineKeyboardButton(
+            f"{i}. {name}",
+            callback_data=safe_callback(f"discovery_artist|{name}")
+        )])
+    buttons.append([
+        InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
+        InlineKeyboardButton("← Menu",     callback_data="cmd|menu"),
+    ])
+    msg.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
 dp.add_handler(CommandHandler("start",     start))
 dp.add_handler(CommandHandler("help",      help_command))
 dp.add_handler(CommandHandler("changelog", changelog_command))
@@ -5627,7 +5681,8 @@ dp.add_handler(CommandHandler("rare",     rare))
 dp.add_handler(CommandHandler("artist",   map_command))  # nombre principal
 dp.add_handler(CommandHandler("explore",  map_command))  # alias
 dp.add_handler(CommandHandler("map",      map_command))  # alias
-dp.add_handler(CommandHandler("tags",     tags))
+dp.add_handler(CommandHandler("tags",      tags))
+dp.add_handler(CommandHandler("discovery", discovery_command))
 dp.add_handler(CommandHandler("status",   status))
 dp.add_handler(CommandHandler("reset",    reset))
 dp.add_handler(CommandHandler("cancel",   cancel_command))  # oculto — no en set_my_commands
@@ -5645,8 +5700,9 @@ try:
         BotCommand("rare",     "💎 Rare finds"),
         BotCommand("artist",   "🧑‍🎤 Explore an artist"),
         BotCommand("genre",    "🎸 Genre playlist"),
-        BotCommand("tags",     "🏷️ Browse tags"),
-        BotCommand("status",   "📊 My stats"),
+        BotCommand("tags",       "🏷️ Browse tags"),
+        BotCommand("discovery",  "🎲 Today's Discovery"),
+        BotCommand("status",     "📊 My stats"),
         BotCommand("help",     "❓ Help"),
     ])
     requests.post(
