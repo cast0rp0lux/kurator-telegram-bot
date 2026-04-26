@@ -3249,11 +3249,11 @@ class _SpinnerThread(threading.Thread):
         super().__init__(daemon=True)
         self._msg  = msg
         self._text = text
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
 
     def run(self):
         frame = 0
-        while not self._stop.wait(SPINNER_INTERVAL):
+        while not self._stop_event.wait(SPINNER_INTERVAL):
             display = f"{SPINNER_FRAMES[frame % len(SPINNER_FRAMES)]} {self._text}"
             try:
                 self._msg.edit_text(display)
@@ -3265,7 +3265,7 @@ class _SpinnerThread(threading.Thread):
             frame += 1
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
         self.join(timeout=SPINNER_INTERVAL + 0.5)
 
 def _start_spinner(msg, text):
