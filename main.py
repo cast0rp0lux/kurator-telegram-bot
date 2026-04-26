@@ -21,10 +21,20 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.12)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.13)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.13": {
+        "date": "2026-04-26",
+        "changes": [
+            "Fix: botón 'Get New' en Today's Discovery ahora funciona correctamente",
+        ],
+        "technical": [
+            "Bug: query.answer() global (line 4452) + segunda llamada query.answer() en discovery_refresh → BadRequest → handler abortaba antes de generar",
+            "Fix: eliminada la segunda query.answer() redundante en discovery_refresh",
+        ]
+    },
     "6.9.12": {
         "date": "2026-04-26",
         "changes": [
@@ -4502,8 +4512,6 @@ def handle_buttons(update, context):
 
         elif value in ("discovery", "discovery_refresh"):
             force = (value == "discovery_refresh")
-            if force:
-                query.answer("🔄 Generating new discoveries…")
             discoveries = _generate_daily_discoveries(force_new=force)
             if not discoveries:
                 _edit_card_message(
