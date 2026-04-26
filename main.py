@@ -21,10 +21,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.10)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.11)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.11": {
+        "date": "2026-04-26",
+        "changes": [
+            "Foto de artista: prioriza og:image (foto principal/cabecera de Last.fm)",
+            "Fallback 2: primera foto del álbum de fotos (/+images)",
+            "Fallback 3: imágenes API de Last.fm (deprecadas)",
+            "Fallback 4: portada del álbum más popular",
+            "Fallback 5: Wikipedia",
+        ],
+        "technical": [
+            "_get_artist_image: step 1=getinfo URL only, step 2=og:image, step 3=gallery, step 4=api_images, step 5=album cover, step 6=Wikipedia",
+            "api_images guardadas en step 1 para usarlas en step 4 si los pasos anteriores fallan",
+        ]
+    },
     "6.9.10": {
         "date": "2026-04-25",
         "changes": [
@@ -1857,42 +1871,53 @@ def _get_artist_image(artist):
                 return _norm_size(url)
         return None
 
-    # ── 1) Last.fm API images (fast path, deprecated but still works for some) ─
+    # ── 1) Get Last.fm page URL (artist.getinfo — URL only, images saved for later) ─
+    api_images = []
     try:
         data        = lastfm("artist.getinfo", artist=artist)
         artist_data = data.get("artist", {})
         lfm_url     = artist_data.get("url", "")
-        images      = artist_data.get("image", [])
-        for size in ["extralarge", "large", "medium"]:
-            for img in images:
-                if img.get("size") == size and img.get("#text"):
-                    url = img["#text"]
-                    if _PLACEHOLDER not in url:
-                        img_url = url
-                        log.info(f"[Image] API {size} for '{artist}'")
-                        break
-            if img_url:
-                break
-        if not img_url and not lfm_url:
-            log.warning(f"[Image] No API images and no URL for '{artist}'")
+        api_images  = artist_data.get("image", [])
+        if not lfm_url:
+            log.warning(f"[Image] No LFM URL for '{artist}'")
     except Exception as e:
         log.error(f"Last.fm getinfo for '{artist}': {e}")
 
-    # ── 2) Last.fm page scrape + gallery ──────────────────────────────────────
+    # ── 2) Main artist photo — og:image of the LFM artist page (header photo) ─
     if not img_url and lfm_url:
         try:
             html    = requests.get(lfm_url, timeout=8, headers=_HEADERS).text
             img_url = _og(html) or _bg(html)
-            if not img_url:
-                gallery = requests.get(lfm_url.rstrip("/") + "/+images",
-                                       timeout=8, headers=_HEADERS).text
-                img_url = _first_cdn(gallery) or _og(gallery)
             if img_url:
-                log.info(f"[Image] Scraped page for '{artist}'")
+                log.info(f"[Image] Main artist photo (og:image) for '{artist}'")
         except Exception as e:
             log.error(f"Last.fm page scrape for '{artist}': {e}")
 
-    # ── 3) Top album cover fallback ───────────────────────────────────────────
+    # ── 3) First photo from artist gallery (/+images) ─────────────────────────
+    if not img_url and lfm_url:
+        try:
+            gallery = requests.get(lfm_url.rstrip("/") + "/+images",
+                                   timeout=8, headers=_HEADERS).text
+            img_url = _first_cdn(gallery) or _og(gallery)
+            if img_url:
+                log.info(f"[Image] Gallery photo for '{artist}'")
+        except Exception as e:
+            log.error(f"Last.fm gallery scrape for '{artist}': {e}")
+
+    # ── 4) LFM API images (deprecated fallback) ───────────────────────────────
+    if not img_url:
+        for size in ["extralarge", "large", "medium"]:
+            for img in api_images:
+                if img.get("size") == size and img.get("#text"):
+                    url = img["#text"]
+                    if _PLACEHOLDER not in url:
+                        img_url = url
+                        log.info(f"[Image] API {size} (fallback) for '{artist}'")
+                        break
+            if img_url:
+                break
+
+    # ── 5) Top album cover fallback ───────────────────────────────────────────
     if not img_url:
         try:
             albums_data = lastfm("artist.gettopalbums", artist=artist, limit=1)
