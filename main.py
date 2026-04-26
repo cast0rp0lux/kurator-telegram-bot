@@ -21,10 +21,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.14)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.15)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.15": {
+        "date": "2026-04-26",
+        "changes": [
+            "Spinner braille animado (1 FPS) en todos los procesos largos: playlists, dig, rare, genre, trail, similar, artist map",
+            "Formato: ⠋ 🎸 Building Hard Rock — 70s playlist…  (ciclo de 10 frames = 10s)",
+        ],
+        "technical": [
+            "SPINNER_FRAMES + SPINNER_INTERVAL=1.0 (Telegram rate-limit safe)",
+            "_SpinnerThread(daemon): edit_text con fallback a edit_caption; stop via threading.Event + join",
+            "_start_spinner(msg, text) → _SpinnerThread; .stop() garantiza que el hilo ha terminado antes de editar el mensaje final",
+            "Aplicado en: playlist/dig/rare (query.message), genre build (query.message), trail_confirm (query.message), similar_generate (query.message), artist map (mapping_msg reply)",
+        ]
+    },
     "6.9.14": {
         "date": "2026-04-26",
         "changes": [
@@ -592,6 +605,8 @@ SINGLES_FALLBACK_LISTENER_CAP  = 1_000_000  # only artists below this get the si
 RARE_CANDIDATE_CAP  = 150
 TAGS_PAGE_SIZE      = 10
 SCORE_THRESHOLD     = 50  # minimum score for track inclusion (0-100)
+SPINNER_FRAMES   = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_INTERVAL = 1.0   # seconds between frames (Telegram rate-limit safe)
 CALLBACK_DATA_MAX   = 60
 TRACK_STORE_MAX     = 20
 TRACK_FETCH_LIMIT   = 50
@@ -3216,6 +3231,37 @@ def _cancel_working(sent, timer):
     sent["done"] = True
     timer.cancel()
 
+class _SpinnerThread(threading.Thread):
+    """Animates a braille spinner on a Telegram message at 1 FPS while a long op runs."""
+    def __init__(self, msg, text):
+        super().__init__(daemon=True)
+        self._msg  = msg
+        self._text = text
+        self._stop = threading.Event()
+
+    def run(self):
+        frame = 0
+        while not self._stop.wait(SPINNER_INTERVAL):
+            display = f"{SPINNER_FRAMES[frame % len(SPINNER_FRAMES)]} {self._text}"
+            try:
+                self._msg.edit_text(display)
+            except Exception:
+                try:
+                    self._msg.edit_caption(display)
+                except Exception:
+                    pass
+            frame += 1
+
+    def stop(self):
+        self._stop.set()
+        self.join(timeout=SPINNER_INTERVAL + 0.5)
+
+def _start_spinner(msg, text):
+    """Start spinner animation on msg. Returns _SpinnerThread — call .stop() when done."""
+    t = _SpinnerThread(msg, text)
+    t.start()
+    return t
+
 def _clear_progress_msgs(chat_id):
     """Delete all intermediate progress messages accumulated during generation."""
     for m in _progress_msgs.pop(chat_id, []):
@@ -4103,10 +4149,12 @@ def map_command(update, context):
 
     mapping_msg = msg.reply_text(f"🧑‍🎤 Exploring {artist_query.upper()}…")
     _pending_map_msgs[chat_id] = mapping_msg.message_id
+    _spin = _start_spinner(mapping_msg, f"🧑‍🎤 Exploring {artist_query.upper()}…")
 
     sent, timer = _working_message(msg, "🧑‍🎤 Still exploring…")
     _nav_history.pop(chat_id, None)
     _render_map(msg, artist_query, chat_id)
+    _spin.stop()
     _cancel_working(sent, timer)
     _pending_map_msgs.pop(chat_id, None)
     try:
@@ -4688,12 +4736,14 @@ def handle_buttons(update, context):
         if gen_action == "playlist":
             map_memory.pop(chat_id, None)
             query.edit_message_text(f"🎵 Selecting tracks{era_tag}…")
+            _spin = _start_spinner(query.message, f"🎵 Selecting tracks{era_tag}…")
             sent, timer = _working_message(message, "🎵 Still selecting…", delay=50)
             _register_timer(chat_id, sent, timer)
             if decades:
                 result = select_tracks_with_decades([], decades=decades, message=message, mode="playlist")
             else:
                 result = select_tracks(expand_artist_graph(extract_seed_artists()))
+            _spin.stop()
             _cancel_working(sent, timer)
             _unregister_timer(chat_id)
             if _is_cancelled(chat_id): _clear_progress_msgs(chat_id); return
@@ -4705,12 +4755,14 @@ def handle_buttons(update, context):
 
         elif gen_action == "dig":
             query.edit_message_text(f"⛏️ Digging{era_tag}…")
+            _spin = _start_spinner(query.message, f"⛏️ Digging{era_tag}…")
             sent, timer = _working_message(message, "⛏️ Going deeper…", delay=50)
             _register_timer(chat_id, sent, timer)
             if decades:
                 result = select_tracks_with_decades([], decades=decades, message=message, mode="dig")
             else:
                 result = select_tracks(expand_artist_graph_deep(extract_seed_artists()))
+            _spin.stop()
             _cancel_working(sent, timer)
             _unregister_timer(chat_id)
             if _is_cancelled(chat_id): _clear_progress_msgs(chat_id); return
@@ -4722,12 +4774,14 @@ def handle_buttons(update, context):
 
         elif gen_action == "rare":
             query.edit_message_text(f"💎 Searching for hidden gems{era_tag}…")
+            _spin = _start_spinner(query.message, f"💎 Searching for hidden gems{era_tag}…")
             sent, timer = _working_message(message, "💎 Hunting for gems…", delay=50)
             _register_timer(chat_id, sent, timer)
             if decades:
                 result = select_tracks_with_decades([], size=RARE_PLAYLIST_SIZE, decades=decades, message=message, mode="rare")
             else:
                 result = select_tracks(expand_artist_graph_rare(extract_seed_artists()), size=RARE_PLAYLIST_SIZE)
+            _spin.stop()
             _cancel_working(sent, timer)
             _unregister_timer(chat_id)
             if _is_cancelled(chat_id): _clear_progress_msgs(chat_id); return
@@ -4744,6 +4798,7 @@ def handle_buttons(update, context):
                 return
 
             query.edit_message_text(f"🎸 Building {style.title()}{era_tag} playlist…")
+            _spin = _start_spinner(query.message, f"🎸 Building {style.title()}{era_tag} playlist…")
             sent, timer = _working_message(message, "🎸 Still building…", delay=50)
             _register_timer(chat_id, sent, timer)
 
@@ -4938,6 +4993,7 @@ def handle_buttons(update, context):
             # Track user genre profile silently
             _update_user_genre_profile(chat_id, style, decades)
 
+            _spin.stop()
             _cancel_working(sent, timer)
             _discover_and_add_styles(artists_used)
             era_tag2 = f" — {_decade_label_from_set(decades)}" if decades else " — ∞ All Time"
@@ -5209,6 +5265,7 @@ def handle_buttons(update, context):
         artist = sub[1] if len(sub) > 1 else ""
         hop_labels = {1: "1 hop", 2: "2 hops"}
         query.edit_message_text(f"🔗 {artist} — Following the trail ({hop_labels.get(hops, '')})…")
+        _spin = _start_spinner(query.message, f"🔗 {artist} — Following the trail…")
         sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
         card_genres = map_memory.get(chat_id, {}).get("info", {}).get("genres", [])
         if hops == 1:
@@ -5222,6 +5279,7 @@ def handle_buttons(update, context):
         else:
             names = _expand_trail(artist, hops, card_genres=card_genres)
         result = select_tracks(names, skip_recent=False)
+        _spin.stop()
         _cancel_working(sent, timer)
         send_playlist(message, result,
                       title=f"🔗 {artist} — {hop_labels.get(hops, '')}",
@@ -5231,6 +5289,7 @@ def handle_buttons(update, context):
     elif action == "similar_generate":
         artist = value
         _edit_card_message(query, chat_id, f"🔗 Generating playlist from {artist}'s scene…", None)
+        _spin = _start_spinner(query.message, f"🔗 Generating playlist from {artist}'s scene…")
         sent, timer = _working_message(message, "🧑‍🎤 Still exploring…")
         # Use the raw Last.fm similar list already stored in map_memory (unfiltered)
         stored = map_memory.get(chat_id, {}).get("similar", [])
@@ -5240,6 +5299,7 @@ def handle_buttons(update, context):
                       .get("similarartists", {}).get("artist", [])]
         names = [artist] + stored
         result = select_tracks(names, skip_recent=False)
+        _spin.stop()
         _cancel_working(sent, timer)
         send_playlist(message, result, title=f"🔗 {artist} — Similar artists",
                       branded=False, chat_id=chat_id, map_chat_id=chat_id)
