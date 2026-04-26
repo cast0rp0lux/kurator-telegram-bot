@@ -4586,7 +4586,7 @@ def handle_buttons(update, context):
                     query, chat_id,
                     "🎲 Today's Discovery\n\n"
                     "Start exploring artists to get personalized recommendations!\n\n"
-                    "💡 Use <b>🧭 Free Explore</b> or <b>✦ Kurator's Picks</b> to build your profile.",
+                    "💡 Use 🧭 Free Explore or ✦ Kurator's Picks to build your profile.",
                     InlineKeyboardMarkup([[InlineKeyboardButton("← Back to Menu", callback_data="cmd|menu")]])
                 )
                 return
