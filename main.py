@@ -53,7 +53,7 @@ CHANGELOG = {
     "6.9.17": {
         "date": "2026-04-27",
         "changes": [
-            "Localización de artistas mejorada: UK muestra subcountry (England 🏴󠁧󠁢󠁥󠁮󠁧󠁿, Scotland 🏴󠁧󠁢󠁳󠁣󠁴󠁿, Wales 🏴󠁧󠁢󠁷󠁬󠁳󠁿) cuando está disponible en MusicBrainz",
+            "Localización de artistas mejorada: UK muestra subcountry (England, Scotland, Wales) cuando está disponible en MusicBrainz",
             "Artistas de EE.UU. muestran estado (ej: 🇺🇸 Los Angeles, California) en vez de solo USA",
         ],
         "technical": [
