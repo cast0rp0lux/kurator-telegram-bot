@@ -4777,10 +4777,9 @@ def handle_buttons(update, context):
             force = (value == "discovery_refresh")
             try:
                 query.edit_message_text(
-                    "🎲 *Today's Discovery*\n\n"
-                    "🎲 Analyzing your listening history\n"
-                    "🎲 Finding similar artists",
-                    parse_mode="Markdown"
+                    "🎲 Today's Discovery…\n"
+                    "🎲 Analyzing your listening history…\n"
+                    "🎲 Finding similar artists…"
                 )
             except Exception:
                 pass
@@ -6032,10 +6031,9 @@ def discovery_command(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     loading = msg.reply_text(
-        "🎲 *Today's Discovery*\n\n"
-        "🎲 Analyzing your listening history\n"
-        "🎲 Finding similar artists",
-        parse_mode="Markdown"
+        "🎲 Today's Discovery…\n"
+        "🎲 Analyzing your listening history…\n"
+        "🎲 Finding similar artists…"
     )
     discoveries = _generate_daily_discoveries(force_new=False)
     try:
