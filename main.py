@@ -4795,12 +4795,12 @@ def handle_buttons(update, context):
                 )
                 return
             buttons = []
-            for i, d in enumerate(discoveries, 1):
-                name = d["name"]
-                buttons.append([InlineKeyboardButton(
-                    f"{i}. {name}",
-                    callback_data=safe_callback(f"discovery_artist|{name}")
-                )])
+            names = [d["name"] for d in discoveries]
+            for j in range(0, len(names), 2):
+                row = [InlineKeyboardButton(names[j], callback_data=safe_callback(f"discovery_artist|{names[j]}"))]
+                if j + 1 < len(names):
+                    row.append(InlineKeyboardButton(names[j+1], callback_data=safe_callback(f"discovery_artist|{names[j+1]}")))
+                buttons.append(row)
             lines = ["🎲 Today's Discovery"]
             buttons.append([
                 InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
@@ -6055,12 +6055,12 @@ def discovery_command(update, context):
         )
         return
     buttons = []
-    for i, d in enumerate(discoveries, 1):
-        name = d["name"]
-        buttons.append([InlineKeyboardButton(
-            f"{i}. {name}",
-            callback_data=safe_callback(f"discovery_artist|{name}")
-        )])
+    names = [d["name"] for d in discoveries]
+    for j in range(0, len(names), 2):
+        row = [InlineKeyboardButton(names[j], callback_data=safe_callback(f"discovery_artist|{names[j]}"))]
+        if j + 1 < len(names):
+            row.append(InlineKeyboardButton(names[j+1], callback_data=safe_callback(f"discovery_artist|{names[j+1]}")))
+        buttons.append(row)
     lines = ["🎲 Today's Discovery"]
     buttons.append([
         InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
