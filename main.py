@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 import requests
 from flask import Flask, request as flask_request
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, Filters, Updater
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -21,10 +21,20 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.21)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.22)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.22": {
+        "date": "2026-04-27",
+        "changes": [
+            "Eliminado botón persistente '🍌 Menú' de la barra inferior de Telegram",
+        ],
+        "technical": [
+            "ReplyKeyboardMarkup → ReplyKeyboardRemove en /start",
+            "Eliminada función _persistent_keyboard()",
+        ]
+    },
     "6.9.21": {
         "date": "2026-04-27",
         "changes": [
@@ -578,9 +588,7 @@ CHANGELOG = {
             "Fix /changelog: html.escape() en entradas para evitar crash HTML"
         ],
         "technical": [
-            "_persistent_keyboard(): ReplyKeyboardMarkup con botón Menú",
-            "handle_text_reply: intercepta '🍌 Menú' antes de ForceReply logic",
-            "start(): envía _persistent_keyboard() en primer uso post-onboarding"
+            "start(): envía ReplyKeyboardRemove() para limpiar barra inferior"
         ]
     },
     "6.0": {
@@ -4236,11 +4244,6 @@ def send_playlist(message, tracks, title="✦ Kurator's Playlist", branded=True,
     )
     log.info(f"[Export] OK (key={key[:20]})")
 
-# ─── Persistent bottom keyboard ───────────────────────────────────────────────
-
-def _persistent_keyboard():
-    """Botón fijo en la barra inferior de Telegram para acceder al menú principal."""
-    return ReplyKeyboardMarkup([["🍌 Menú"]], resize_keyboard=True, input_field_placeholder="Escribe o pulsa Menú…")
 
 # ─── Main menu ────────────────────────────────────────────────────────────────
 
@@ -4291,7 +4294,7 @@ Decade filtering takes up to 60 seconds. Kurator cross-checks artists against mu
 def start(update, context):
     chat_id = update.effective_chat.id
     if is_onboarded(chat_id):
-        update.message.reply_text("🦍", reply_markup=_persistent_keyboard())
+        update.message.reply_text("🦍", reply_markup=ReplyKeyboardRemove())
         update.message.reply_text(
             f"{BOT_VERSION}\n\n<b>✦ Kurator's Picks</b> — Playlists from a real listening history.\n\n<b>🧭 Free Explore</b> — Navigate the music map freely.",
             parse_mode="HTML",
