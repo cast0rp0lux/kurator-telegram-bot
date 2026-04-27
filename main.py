@@ -25,6 +25,16 @@ BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.23)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.23": {
+        "date": "2026-04-27",
+        "changes": [
+            "Fix: '← Back' desde tarjeta de artista ya no crashea al volver al Free Explore",
+        ],
+        "technical": [
+            "explore_menu: query.edit_message_text falla en mensajes con foto",
+            "Fix: detectar message.photo → delete() + reply_text() en vez de edit_message_text",
+        ]
+    },
     "6.9.22": {
         "date": "2026-04-27",
         "changes": [
