@@ -7,6 +7,8 @@ import time
 import tempfile
 import itertools
 import threading
+import hashlib
+import io as _io_module
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
@@ -20,11 +22,33 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, F
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# ─── Image cache ──────────────────────────────────────────────────────────────
+ARTIST_IMAGE_CACHE_DIR = "/home/claude/artist_images"
+os.makedirs(ARTIST_IMAGE_CACHE_DIR, exist_ok=True)
+_IMG_MIN_RATIO = 0.75
+_IMG_MAX_RATIO = 1.33
+
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.24)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.25)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.25": {
+        "date": "2026-04-27",
+        "changes": [
+            "Caché persistente de imágenes en disco (/home/claude/artist_images/)",
+            "Selección inteligente de foto: se prueban hasta 6 fotos de galería y se elige la de mejor aspect ratio",
+            "Imágenes compartidas entre usuarios — reduce llamadas a Last.fm",
+        ],
+        "technical": [
+            "Añadidos _load_cached_image / _save_cached_image / _image_cache_path (MD5 hash)",
+            "_first_cdn → _all_cdn: devuelve hasta 6 URLs en vez de la primera",
+            "_pick_best(): descarga candidatos, calcula |ratio-1.0|, ordena por (fuera_de_rango, score)",
+            "Thresholds: _IMG_MIN_RATIO=0.75, _IMG_MAX_RATIO=1.33",
+            "_norm_size ahora pide 500x500 al CDN de Last.fm (antes 300x300)",
+            "import hashlib + io como _io_module en imports globales",
+        ]
+    },
     "6.9.24": {
         "date": "2026-04-27",
         "changes": [
@@ -2075,19 +2099,52 @@ def _get_artist_primary_tags(artist):
 
 _artist_image_cache = {}
 
+def _image_cache_path(artist):
+    key = hashlib.md5(artist.lower().strip().encode()).hexdigest()
+    return os.path.join(ARTIST_IMAGE_CACHE_DIR, f"{key}.jpg")
+
+def _load_cached_image(artist):
+    path = _image_cache_path(artist)
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            log.info(f"[Image Cache] HIT disk '{artist}' ({len(data)} bytes)")
+            return data
+        except Exception as e:
+            log.error(f"[Image Cache] Read error for '{artist}': {e}")
+    return None
+
+def _save_cached_image(artist, data):
+    path = _image_cache_path(artist)
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+        log.info(f"[Image Cache] SAVED '{artist}' ({len(data)} bytes)")
+    except Exception as e:
+        log.error(f"[Image Cache] Write error for '{artist}': {e}")
+
 def _get_artist_image(artist):
-    """Return artist photo as square 600×600 JPEG bytes, or None."""
+    """Return artist photo as square 600×600 JPEG bytes, or None.
+    Uses persistent disk cache + aspect-ratio-aware gallery selection."""
     log.info(f"[Image] >>> CALLED with artist='{artist}'")
+
     if artist in _artist_image_cache:
+        log.info(f"[Image Cache] HIT memory '{artist}'")
         return _artist_image_cache[artist]
+
+    cached = _load_cached_image(artist)
+    if cached is not None:
+        _artist_image_cache[artist] = cached
+        return cached
+
     _PLACEHOLDER = "2a96cbd8b46e442fc41c2b86b821562f"
     _HEADERS     = {"User-Agent": "Mozilla/5.0"}
-    img_url = None
-    lfm_url = ""
+    lfm_url      = ""
 
     def _norm_size(url):
-        url = re.sub(r'/\d+x\d+/', '/300x300/', url)
-        url = re.sub(r'/\d+s/',    '/300x300/', url)
+        url = re.sub(r'/\d+x\d+/', '/500x500/', url)
+        url = re.sub(r'/\d+s/',    '/500x500/', url)
         return url
 
     def _og(html):
@@ -2106,20 +2163,86 @@ def _get_artist_image(artist):
             return _norm_size(m.group(1))
         return None
 
-    def _first_cdn(html):
+    def _all_cdn(html, limit=6):
+        urls = []
         for m in re.finditer(r'https://lastfm\.freetls\.fastly\.net/i/u/[^\s"\'<>\\]+', html):
             url = m.group(0).replace("\\/", "/").split("?")[0].rstrip(".,;")
             if _PLACEHOLDER not in url and re.search(r'\.(jpg|jpeg|png)$', url, re.I):
-                if re.search(r'/\d{1,2}[sx]/', url):  # skip icon-sized thumbnails
+                if re.search(r'/\d{1,2}[sx]/', url):
                     continue
-                return _norm_size(url)
-        return None
+                norm = _norm_size(url)
+                if norm not in urls:
+                    urls.append(norm)
+                if len(urls) >= limit:
+                    break
+        return urls
 
-    # ── 1) Get Last.fm page URL (artist.getinfo — URL only, images saved for later) ─
+    def _process_url(url):
+        """Download url, crop to square 600×600. Returns JPEG bytes or None."""
+        from PIL import Image
+        try:
+            raw = requests.get(url, timeout=8, headers=_HEADERS).content
+            img = Image.open(_io_module.BytesIO(raw)).convert("RGB")
+            w, h = img.size
+            sq = min(w, h)
+            img = img.crop(((w - sq) // 2, (h - sq) // 2, (w + sq) // 2, (h + sq) // 2))
+            img = img.resize((600, 600), Image.LANCZOS)
+            buf = _io_module.BytesIO()
+            img.save(buf, "JPEG", quality=88)
+            return buf.getvalue()
+        except Exception as e:
+            log.debug(f"[Image] Processing failed for {url[:80]}: {e}")
+            return None
+
+    def _pick_best(urls):
+        """Try each URL, prefer images closest to square aspect ratio.
+        Returns JPEG bytes of best candidate, or None."""
+        from PIL import Image
+        candidates = []
+        for url in urls:
+            try:
+                raw = requests.get(url, timeout=8, headers=_HEADERS).content
+                img = Image.open(_io_module.BytesIO(raw)).convert("RGB")
+                w, h = img.size
+                ratio = w / h
+                score = abs(ratio - 1.0)
+                ok    = _IMG_MIN_RATIO <= ratio <= _IMG_MAX_RATIO
+                log.info(f"[Image] ratio={ratio:.2f} score={score:.2f} ok={ok} {url[:70]}")
+                candidates.append((score, ok, raw, url))
+                if ok and score < 0.10:
+                    break
+            except Exception as e:
+                log.debug(f"[Image] Fetch failed {url[:70]}: {e}")
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: (not x[1], x[0]))
+        score, ok, raw, best_url = candidates[0]
+        log.info(f"[Image] Best candidate score={score:.2f} ok={ok} from {len(candidates)}")
+        try:
+            from PIL import Image
+            img = Image.open(_io_module.BytesIO(raw)).convert("RGB")
+            w, h = img.size
+            sq = min(w, h)
+            img = img.crop(((w - sq) // 2, (h - sq) // 2, (w + sq) // 2, (h + sq) // 2))
+            img = img.resize((600, 600), Image.LANCZOS)
+            buf = _io_module.BytesIO()
+            img.save(buf, "JPEG", quality=88)
+            return buf.getvalue()
+        except Exception as e:
+            log.error(f"[Image] Final crop failed: {e}")
+            return None
+
+    def _cache_and_return(data):
+        _artist_image_cache[artist] = data
+        if data:
+            _save_cached_image(artist, data)
+        return data
+
+    # ── 1) Last.fm getinfo — get page URL and API images ─────────────────────
     api_images = []
     try:
-        data        = lastfm("artist.getinfo", artist=artist)
-        artist_data = data.get("artist", {})
+        info        = lastfm("artist.getinfo", artist=artist)
+        artist_data = info.get("artist", {})
         lfm_url     = artist_data.get("url", "")
         api_images  = artist_data.get("image", [])
         if not lfm_url:
@@ -2127,99 +2250,82 @@ def _get_artist_image(artist):
     except Exception as e:
         log.error(f"Last.fm getinfo for '{artist}': {e}")
 
-    # ── 2) Artist photo gallery (/+images) — real artist photos, not album covers ─
-    if not img_url and lfm_url:
+    # ── 2) Gallery /+images — multiple photos, pick best aspect ratio ─────────
+    if lfm_url:
         try:
-            gallery = requests.get(lfm_url.rstrip("/") + "/+images",
-                                   timeout=8, headers=_HEADERS).text
-            img_url = _first_cdn(gallery)
-            if img_url:
-                log.info(f"[Image] Gallery photo for '{artist}'")
+            gallery_html = requests.get(lfm_url.rstrip("/") + "/+images",
+                                        timeout=8, headers=_HEADERS).text
+            gallery_urls = _all_cdn(gallery_html)
+            if gallery_urls:
+                log.info(f"[Image] Gallery: {len(gallery_urls)} candidates for '{artist}'")
+                result = _pick_best(gallery_urls)
+                if result:
+                    return _cache_and_return(result)
         except Exception as e:
-            log.error(f"Last.fm gallery scrape for '{artist}': {e}")
+            log.error(f"Last.fm gallery for '{artist}': {e}")
 
-    # ── 3) Main artist page: background-image header photo, then og:image ─────
-    if not img_url and lfm_url:
+    # ── 3) Main page bg/og ───────────────────────────────────────────────────
+    if lfm_url:
         try:
             html    = requests.get(lfm_url, timeout=8, headers=_HEADERS).text
             img_url = _bg(html) or _og(html)
             if img_url:
-                log.info(f"[Image] Page photo (bg/og) for '{artist}'")
+                log.info(f"[Image] Page bg/og for '{artist}'")
+                result = _process_url(img_url)
+                if result:
+                    return _cache_and_return(result)
         except Exception as e:
             log.error(f"Last.fm page scrape for '{artist}': {e}")
 
-    # ── 4) LFM API images (deprecated fallback) ───────────────────────────────
-    if not img_url:
-        for size in ["extralarge", "large", "medium"]:
-            for img in api_images:
-                if img.get("size") == size and img.get("#text"):
-                    url = img["#text"]
-                    if _PLACEHOLDER not in url:
-                        img_url = url
-                        log.info(f"[Image] API {size} (fallback) for '{artist}'")
-                        break
-            if img_url:
-                break
+    # ── 4) LFM API images (deprecated) ───────────────────────────────────────
+    for size in ["extralarge", "large", "medium"]:
+        for img in api_images:
+            if img.get("size") == size and img.get("#text"):
+                url = img["#text"]
+                if _PLACEHOLDER not in url:
+                    log.info(f"[Image] API {size} for '{artist}'")
+                    result = _process_url(url)
+                    if result:
+                        return _cache_and_return(result)
 
-    # ── 5) Top album cover fallback ───────────────────────────────────────────
-    if not img_url:
-        try:
-            albums_data = lastfm("artist.gettopalbums", artist=artist, limit=1)
-            albums = albums_data.get("topalbums", {}).get("album", [])
-            top = albums[0] if isinstance(albums, list) and albums else None
-            if top:
-                for size in ["extralarge", "large", "medium"]:
-                    for img in top.get("image", []):
-                        if img.get("size") == size and img.get("#text"):
-                            url = img["#text"]
-                            if _PLACEHOLDER not in url:
-                                img_url = url
-                                log.info(f"[Image] Album cover fallback '{top.get('name','')}' for '{artist}'")
-                                break
-                    if img_url:
-                        break
-        except Exception as e:
-            log.error(f"Last.fm top albums for '{artist}': {e}")
-
-    # ── 4) Wikipedia fallback ──────────────────────────────────────────────────
-    if not img_url:
-        try:
-            wp = requests.get(
-                "https://en.wikipedia.org/w/api.php",
-                params={"action": "query", "titles": artist,
-                        "prop": "pageimages", "format": "json", "pithumbsize": 600},
-                timeout=5, headers=_HEADERS
-            ).json()
-            for page in wp.get("query", {}).get("pages", {}).values():
-                src = page.get("thumbnail", {}).get("source")
-                if src:
-                    img_url = src
-                    break
-        except Exception as e:
-            log.error(f"Wikipedia image for {artist}: {e}")
-
-    if not img_url:
-        _artist_image_cache[artist] = None
-        return None
-
+    # ── 5) Top album cover ────────────────────────────────────────────────────
     try:
-        from PIL import Image
-        import io as _io
-        raw = requests.get(img_url, timeout=8, headers=_HEADERS).content
-        img = Image.open(_io.BytesIO(raw)).convert("RGB")
-        w, h = img.size
-        sq = min(w, h)
-        img = img.crop(((w - sq) // 2, (h - sq) // 2, (w + sq) // 2, (h + sq) // 2))
-        img = img.resize((600, 600), Image.LANCZOS)
-        buf = _io.BytesIO()
-        img.save(buf, "JPEG", quality=88)
-        result = buf.getvalue()
-        _artist_image_cache[artist] = result
-        return result
+        albums_data = lastfm("artist.gettopalbums", artist=artist, limit=1)
+        albums = albums_data.get("topalbums", {}).get("album", [])
+        top = albums[0] if isinstance(albums, list) and albums else None
+        if top:
+            for size in ["extralarge", "large", "medium"]:
+                for img in top.get("image", []):
+                    if img.get("size") == size and img.get("#text"):
+                        url = img["#text"]
+                        if _PLACEHOLDER not in url:
+                            log.info(f"[Image] Album cover '{top.get('name','')}' for '{artist}'")
+                            result = _process_url(url)
+                            if result:
+                                return _cache_and_return(result)
     except Exception as e:
-        log.error(f"Image processing for {artist}: {e}")
-        _artist_image_cache[artist] = None
-        return None
+        log.error(f"Last.fm top albums for '{artist}': {e}")
+
+    # ── 6) Wikipedia ──────────────────────────────────────────────────────────
+    try:
+        wp = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={"action": "query", "titles": artist,
+                    "prop": "pageimages", "format": "json", "pithumbsize": 600},
+            timeout=5, headers=_HEADERS
+        ).json()
+        for page in wp.get("query", {}).get("pages", {}).values():
+            src = page.get("thumbnail", {}).get("source")
+            if src:
+                log.info(f"[Image] Wikipedia for '{artist}'")
+                result = _process_url(src)
+                if result:
+                    return _cache_and_return(result)
+    except Exception as e:
+        log.error(f"Wikipedia image for '{artist}': {e}")
+
+    log.warning(f"[Image] No image found for '{artist}'")
+    return _cache_and_return(None)
 
 
 def _edit_card_message(query, chat_id, text, markup):
