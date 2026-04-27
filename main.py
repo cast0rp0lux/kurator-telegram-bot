@@ -21,10 +21,26 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.20)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.21)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.21": {
+        "date": "2026-04-27",
+        "changes": [
+            "Singles en pool común con albums/EPs — igual probabilidad en cada release",
+            "Filtro A-side anti-superhits: <300K listeners permite A-sides; ≥300K solo B-sides",
+            "Solistas (Person) aceptados con año de inicio de carrera (no nacimiento)",
+        ],
+        "technical": [
+            "_classify_single_tracks: ≤2 tracks → A/B distinction; 3+ → todos B-sides (EP)",
+            "_try_track_from_single_with_filter: filtro por popularidad, B-sides primero",
+            "_get_person_career_start: primer album MB → tag de decada → birth year",
+            "_fetch_track_from_early_albums: pool unificado albums+singles shuffled",
+            "_get_musicbrainz_artist_data: Person ya no rechazado, usa career start",
+            "SINGLE_A_SIDE_SMALL_CAP=300K, SINGLE_A_SIDE_MEDIUM_CAP=1M",
+        ]
+    },
     "6.9.20": {
         "date": "2026-04-27",
         "changes": [
@@ -666,7 +682,9 @@ PLAYLIST_SIZE       = 50
 GENRE_PLAYLIST_SIZE = 50
 RARE_PLAYLIST_SIZE  = 50
 RARE_MAX_LISTENERS             = 500_000
-SINGLES_FALLBACK_LISTENER_CAP  = 1_000_000  # only artists below this get the singles/EPs fallback
+SINGLES_FALLBACK_LISTENER_CAP  = 1_000_000  # legacy — kept for any remaining callers
+SINGLE_A_SIDE_SMALL_CAP        = 300_000    # <300K listeners: A-sides + B-sides allowed
+SINGLE_A_SIDE_MEDIUM_CAP       = 1_000_000  # 300K–1M: only B-sides; >1M: only B-sides
 RARE_CANDIDATE_CAP  = 150
 TAGS_PAGE_SIZE      = 10
 SCORE_THRESHOLD     = 50  # minimum score for track inclusion (0-100)
@@ -1357,71 +1375,65 @@ SEASONAL_TRACK_BLACKLIST = {
 
 def _fetch_track_from_early_albums(artist, decade_years=None):
     """
-    Fetch a track from the artist's early studio albums via MusicBrainz + Last.fm.
-    When decade_years is specified (era mode):
-    - Only uses albums within that era range
-    - Returns None if no era-matching albums found (no fallback — Discogs is source of truth)
-    When no decade_years:
-    - Falls back to _fetch_top_track if no MB data
+    Fetch a track from a unified pool: albums, EPs, and singles mixed equally.
+    Singles filtered: A-sides blocked for ≥300K listeners artists.
+    When decade_years: only releases within era. When no era: falls back to _fetch_top_track.
     """
     try:
-        # Step 1: find MBID
         mbid, _ = _mb_find_artist(artist)
         if not mbid:
-            # No MB data — only fallback if no era constraint
             return None if decade_years else _fetch_top_track(artist)
 
-        # Step 2: get studio albums ordered by year
-        albums = _mb_studio_albums(mbid)
-        if not albums:
-            if decade_years:
-                lo, hi = decade_years
-                return _try_track_from_singles_eps(artist, mbid, lo, hi, SINGLES_FALLBACK_LISTENER_CAP)
-            return _fetch_top_track(artist)
+        albums  = _mb_studio_albums(mbid)
+        singles = _mb_singles_eps(mbid)
+        listeners = _get_listeners_cached(artist)
 
-        # Step 3: filter by era if specified, else take first 4
         if decade_years:
             lo, hi = decade_years
-            era_albums = [a for a in albums if a.get("year") and lo <= int(a["year"]) <= hi]
-            if not era_albums:
-                return _try_track_from_singles_eps(artist, mbid, lo, hi, SINGLES_FALLBACK_LISTENER_CAP)
-            candidate_albums = era_albums[:5]
+            era_albums  = [a for a in albums  if a.get("year") and lo <= int(a["year"]) <= hi]
+            era_singles = [s for s in singles if s.get("year") and lo <= int(s["year"]) <= hi]
         else:
-            candidate_albums = albums[:4]
+            era_albums  = albums[:4]
+            era_singles = singles[:4]
 
-        if not candidate_albums:
+        pool = ([{"type": "album",  "data": a} for a in era_albums] +
+                [{"type": "single", "data": s} for s in era_singles])
+
+        if not pool:
             return None if decade_years else _fetch_top_track(artist)
 
-        # Step 4: try each album for a valid track
-        random.shuffle(candidate_albums)
-        for album in candidate_albums:
-            try:
-                data   = lastfm("album.getinfo", artist=artist, album=album["title"])
-                tracks = data.get("album", {}).get("tracks", {}).get("track", [])
-                if not tracks:
-                    continue
-                if isinstance(tracks, dict):
-                    tracks = [tracks]
-                # Filter live tracks
-                valid = [t for t in tracks if not _is_live_track(t.get("name", ""))]
-                if not valid:
-                    valid = tracks
-                random.shuffle(valid)
-                for t in valid:
-                    name  = t.get("name", "")
-                    clean = _clean_track_title(name)
-                    if clean.lower() in SEASONAL_TRACK_BLACKLIST:
+        random.shuffle(pool)
+
+        for release in pool:
+            if release["type"] == "album":
+                try:
+                    data   = lastfm("album.getinfo", artist=artist, album=release["data"]["title"])
+                    tracks = data.get("album", {}).get("tracks", {}).get("track", [])
+                    if not tracks:
                         continue
-                    key   = f"{normalize(artist)}-{normalize(clean)}"
-                    if not track_in_history(key):
-                        return (artist, clean, key)
-            except Exception:
-                continue
+                    if isinstance(tracks, dict):
+                        tracks = [tracks]
+                    valid = [t for t in tracks if not _is_live_track(t.get("name", ""))] or tracks
+                    random.shuffle(valid)
+                    for t in valid:
+                        clean = _clean_track_title(t.get("name", ""))
+                        if clean.lower() in SEASONAL_TRACK_BLACKLIST:
+                            continue
+                        key = f"{normalize(artist)}-{normalize(clean)}"
+                        if not track_in_history(key):
+                            ep_label = " (EP)" if release["data"].get("is_ep") else ""
+                            log.info(f"Album{ep_label}: '{artist}' → '{clean}'")
+                            return (artist, clean, key)
+                except Exception:
+                    continue
+            else:
+                result = _try_track_from_single_with_filter(artist, release["data"], listeners)
+                if result:
+                    return result
 
     except Exception as e:
         log.error(f"_fetch_track_from_early_albums {artist}: {e}")
 
-    # Final fallback — only when no era constraint
     return None if decade_years else _fetch_top_track(artist)
 
 def _fetch_top_track(artist):
@@ -3674,36 +3686,38 @@ def _get_musicbrainz_artist_data(artist):
     else:
         queries.append("The " + artist)
 
-    person_found = False  # track if MB explicitly identified artist as Person
-
     for q in queries:
         data = _mb_get("artist/", {"query": f'artist:"{q}"', "limit": 5})
         candidates = data.get("artists", [])
 
-        # Prefer Group match at score >= 80 with name match
+        # Prefer Group at score ≥80 + name match; accept Person too (career year used)
         match = None
         for c in candidates:
             if int(c.get("score", 0)) >= 80 and \
                _strip_the(c.get("name", "")) == _strip_the(artist):
-                if c.get("type") == "Group":
+                if c.get("type") in ("Group", "Person"):
                     match = c
                     break
-                elif c.get("type") == "Person":
-                    log.info(f"[MB] '{artist}' is Person — will reject")
-                    person_found = True
                 elif match is None:
-                    match = c  # Orchestra, Choir, etc — non-Person fallback
+                    match = c  # Orchestra, Choir, etc.
 
-        # Score >= 90 fallback
+        # Score ≥90 fallback
         if not match and candidates:
             top = candidates[0]
             if int(top.get("score", 0)) >= 90:
-                if top.get("type") == "Person":
-                    person_found = True
-                else:
-                    match = top
+                match = top
 
         if match:
+            artist_type = match.get("type")
+            mbid        = match.get("id")
+
+            if artist_type == "Person":
+                mb_full      = _mb_artist_full(mbid)
+                career_start = _get_person_career_start(mbid, mb_full)
+                log.info(f"[MB] '{artist}' is Person — career start: {career_start}")
+                return {"begin_year": career_start, "name": match.get("name"),
+                        "mbid": mbid, "type": "Person", "is_solo_artist": True}
+
             begin_date = (match.get("life-span") or {}).get("begin") or ""
             begin_year = None
             if begin_date:
@@ -3711,12 +3725,9 @@ def _get_musicbrainz_artist_data(artist):
                     begin_year = int(begin_date.split("-")[0])
                 except (ValueError, IndexError):
                     pass
-            return {"begin_year": begin_year, "name": match.get("name"), "mbid": match.get("id"),
-                    "type": match.get("type")}
+            return {"begin_year": begin_year, "name": match.get("name"),
+                    "mbid": mbid, "type": artist_type}
 
-    # No Group found — signal rejection if Person was definitively detected
-    if person_found:
-        return {"type": "Person", "rejected": True}
     return None
 
 
@@ -3745,12 +3756,6 @@ def _validate_seed_temporal_coherence(artist, target_decades):
 
     try:
         mb_data = _get_musicbrainz_artist_data(artist)
-
-        # MB explicitly identified this as a Person — hard reject
-        if mb_data and mb_data.get("rejected"):
-            result = (False, None, "Person (not Group) — rejected")
-            _seed_validation_cache[cache_key] = result
-            return result
 
         if not mb_data:
             result = (True, None, "no MB data (accepted)")
@@ -3842,6 +3847,93 @@ def _mb_singles_eps(mbid):
             results.append({"title": title, "year": year})
     results.sort(key=lambda r: r["year"] or "9999")
     return results
+
+def _classify_single_tracks(tracks):
+    """Single with ≤2 tracks: track 0 = A-side, rest = B-sides. 3+: all B-sides (EP)."""
+    if not tracks:
+        return [], []
+    if len(tracks) <= 2:
+        return tracks[:1], tracks[1:]
+    return [], tracks[:]
+
+
+def _try_track_from_single_with_filter(artist, single_data, listeners):
+    """
+    Get a track from one single, applying A-side filter based on artist popularity.
+    <300K: B-sides prioritised, A-sides allowed. ≥300K: B-sides only.
+    Returns (artist, clean_title, key) or None.
+    """
+    title = single_data.get("title", "")
+    try:
+        data   = lastfm("album.getinfo", artist=artist, album=title)
+        tracks = data.get("album", {}).get("tracks", {}).get("track", [])
+        if not tracks:
+            raise ValueError("no tracks")
+        if isinstance(tracks, dict):
+            tracks = [tracks]
+        valid = [t for t in tracks if not _is_live_track(t.get("name", ""))] or tracks
+        a_sides, b_sides = _classify_single_tracks(valid)
+        candidates = (b_sides + a_sides) if listeners < SINGLE_A_SIDE_SMALL_CAP else b_sides
+        for t in candidates:
+            clean = _clean_track_title(t.get("name", ""))
+            if clean.lower() in SEASONAL_TRACK_BLACKLIST:
+                continue
+            key = f"{normalize(artist)}-{normalize(clean)}"
+            if not track_in_history(key):
+                side = "A" if t in a_sides else "B"
+                log.info(f"Single ({side}-side): '{artist}' → '{clean}' (via {title})")
+                return (artist, clean, key)
+    except Exception:
+        pass
+    # Last.fm had no tracklist — use single title as A-side (lowest priority)
+    if listeners < SINGLE_A_SIDE_SMALL_CAP:
+        clean = _clean_track_title(title)
+        if clean.lower() not in SEASONAL_TRACK_BLACKLIST:
+            key = f"{normalize(artist)}-{normalize(clean)}"
+            if not track_in_history(key):
+                log.info(f"Single (A-side title): '{artist}' → '{clean}'")
+                return (artist, clean, key)
+    return None
+
+
+def _get_person_career_start(mbid, mb_full_data):
+    """
+    Career start year for solo artists (Type = Person).
+    1. First album year from MB  2. Decade tag  3. Birth year (last resort).
+    """
+    try:
+        albums = _mb_studio_albums(mbid)
+        years  = [int(a["year"]) for a in albums if a.get("year")]
+        if years:
+            year = min(years)
+            log.info(f"[Person] Career start from first album: {year}")
+            return year
+    except Exception:
+        pass
+    _decade_map = {
+        "60s": 1965, "sixties": 1965,
+        "70s": 1975, "seventies": 1975,
+        "80s": 1985, "eighties": 1985,
+        "90s": 1995, "nineties": 1995,
+        "00s": 2005, "2000s": 2005,
+        "10s": 2015, "2010s": 2015,
+    }
+    for tag in mb_full_data.get("tags", []):
+        name = tag.get("name", "").lower()
+        for k, v in _decade_map.items():
+            if k in name:
+                log.info(f"[Person] Career start from tag '{k}': {v}")
+                return v
+    try:
+        begin = (mb_full_data.get("life-span") or {}).get("begin", "")
+        if begin:
+            year = int(begin[:4])
+            log.warning(f"[Person] Using birth year as fallback: {year}")
+            return year
+    except Exception:
+        pass
+    return None
+
 
 def _try_track_from_singles_eps(artist, mbid, lo, hi, listener_cap):
     """
