@@ -21,10 +21,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.19)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.20)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.20": {
+        "date": "2026-04-27",
+        "changes": [
+            "Discovery: 15 → 16 artistas (grid 2×8 completo)",
+            "Tarjeta de artista muestra '← Back to Discovery' cuando viene de Discovery",
+            "Loading de /discovery: 3 mensajes separados, uno cada 5 segundos",
+        ],
+        "technical": [
+            "pool[:16] en _generate_daily_discoveries",
+            "map_memory[chat_id]['from_discovery'] flag en discovery_artist",
+            "_render_map: botón final contextual según from_discovery",
+            "flag limpiado en explore_menu y discovery/discovery_refresh",
+        ]
+    },
     "6.9.19": {
         "date": "2026-04-27",
         "changes": [
@@ -1112,7 +1126,7 @@ def _generate_daily_discoveries(force_new=False):
     scored.sort(key=lambda x: x["score"], reverse=True)
     pool = scored[:30]
     _random.shuffle(pool)
-    discoveries = [{"name": d["name"]} for d in pool[:15]]
+    discoveries = [{"name": d["name"]} for d in pool[:16]]
 
     log.info(f"[Discovery] Selected {len(discoveries)} discoveries")
     try:
@@ -4527,7 +4541,10 @@ def _build_map_buttons(display_name, sorted_styles, info, chat_id):
             callback_data=f"map_styles|{chat_id}|0"
         )])
 
-    buttons.append([InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")])
+    if map_memory.get(chat_id, {}).get("from_discovery"):
+        buttons.append([InlineKeyboardButton("← Back to Discovery", callback_data="cmd|discovery")])
+    else:
+        buttons.append([InlineKeyboardButton("🍌 Menu", callback_data="cmd|menu")])
     return buttons
 
 # ─── Tags renderer ────────────────────────────────────────────────────────────
@@ -4758,6 +4775,7 @@ def handle_buttons(update, context):
 
         elif value == "explore_menu":
             _pending_gen.pop(chat_id, None)
+            map_memory.get(chat_id, {}).pop("from_discovery", None)
             query.edit_message_text(
                 "<b>🧭 Free Explore</b>\n\n"
                 "Navigate the music world freely.\n"
@@ -4775,15 +4793,27 @@ def handle_buttons(update, context):
 
         elif value in ("discovery", "discovery_refresh"):
             force = (value == "discovery_refresh")
+            map_memory.get(chat_id, {}).pop("from_discovery", None)
             try:
-                query.edit_message_text(
-                    "🎲 Today's Discovery…\n"
-                    "🎲 Analyzing your listening history…\n"
-                    "🎲 Finding similar artists…"
-                )
+                query.edit_message_text("🎲 Today's Discovery…")
             except Exception:
                 pass
+            _loading_msgs = []
+            def _dl2():
+                try: _loading_msgs.append(context.bot.send_message(chat_id, "🎲 Analyzing your listening history…"))
+                except Exception: pass
+            def _dl3():
+                try: _loading_msgs.append(context.bot.send_message(chat_id, "🎲 Finding similar artists…"))
+                except Exception: pass
+            _t2 = threading.Timer(5,  _dl2)
+            _t3 = threading.Timer(10, _dl3)
+            _t2.start(); _t3.start()
             discoveries = _generate_daily_discoveries(force_new=force)
+            _t2.cancel(); _t3.cancel()
+            time.sleep(0.15)
+            for _m in _loading_msgs:
+                try: _m.delete()
+                except Exception: pass
             if not discoveries:
                 _edit_card_message(
                     query, chat_id,
@@ -5478,6 +5508,7 @@ def handle_buttons(update, context):
         artist = canonical or value
         log.info(f"[Discovery] Exploring artist: '{artist}'")
         _nav_history.pop(chat_id, None)
+        map_memory.setdefault(chat_id, {})["from_discovery"] = True
         # Delete the previous artist card (not the discovery list)
         prev_msg_id = map_memory.get(chat_id, {}).get("message_id")
         if prev_msg_id:
@@ -6030,16 +6061,26 @@ log.info("Flask OAuth server started on port 8080")
 def discovery_command(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
-    loading = msg.reply_text(
-        "🎲 Today's Discovery…\n"
-        "🎲 Analyzing your listening history…\n"
-        "🎲 Finding similar artists…"
-    )
+    _disc_loading = []
+    def _dl1():
+        try: _disc_loading.append(msg.reply_text("🎲 Today's Discovery…"))
+        except Exception: pass
+    def _dl2():
+        try: _disc_loading.append(msg.reply_text("🎲 Analyzing your listening history…"))
+        except Exception: pass
+    def _dl3():
+        try: _disc_loading.append(msg.reply_text("🎲 Finding similar artists…"))
+        except Exception: pass
+    _dl1()
+    _dt2 = threading.Timer(5,  _dl2)
+    _dt3 = threading.Timer(10, _dl3)
+    _dt2.start(); _dt3.start()
     discoveries = _generate_daily_discoveries(force_new=False)
-    try:
-        loading.delete()
-    except Exception:
-        pass
+    _dt2.cancel(); _dt3.cancel()
+    time.sleep(0.15)
+    for _m in _disc_loading:
+        try: _m.delete()
+        except Exception: pass
     if not discoveries:
         msg.reply_text(
             "🎲 Today's Discovery\n\n"
