@@ -28,7 +28,7 @@ CHANGELOG = {
     "6.9.19": {
         "date": "2026-04-27",
         "changes": [
-            "Nuevo botón '🍌 Generate Playlist' en Today's Discovery",
+            "Nuevo botón '🍌 GENERATE PLAYLIST' en Today's Discovery",
             "Pipeline: 15 seeds → expand 5 similares cada uno → filtro underground → 50 tracks",
             "Mix 30% más oscuro + 70% underground aleatorio",
         ],
@@ -4803,7 +4803,7 @@ def handle_buttons(update, context):
                 )])
             lines = ["🎲 Today's Discovery"]
             buttons.append([
-                InlineKeyboardButton("🍌 Generate Playlist", callback_data="cmd|discovery_playlist"),
+                InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
             ])
             buttons.append([
                 InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
@@ -6064,7 +6064,7 @@ def discovery_command(update, context):
         )])
     lines = ["🎲 Today's Discovery"]
     buttons.append([
-        InlineKeyboardButton("🍌 Generate Playlist", callback_data="cmd|discovery_playlist"),
+        InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
     ])
     buttons.append([
         InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
