@@ -21,7 +21,7 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.22)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.23)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
@@ -4872,20 +4872,30 @@ def handle_buttons(update, context):
         elif value == "explore_menu":
             _pending_gen.pop(chat_id, None)
             map_memory.get(chat_id, {}).pop("from_discovery", None)
-            query.edit_message_text(
+            _explore_text   = (
                 "<b>🧭 Free Explore</b>\n\n"
                 "Navigate the music world freely.\n"
                 "Start from an artist, a genre, or your own tag library.\n\n"
-                "▼ Where do you want to start?",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🧑‍🎤 Artist",              callback_data="cmd|map_prompt")],
-                    [InlineKeyboardButton("🎸 Play a genre",       callback_data="cmd|genre_prompt")],
-                    [InlineKeyboardButton("🏷️ My tag collection",  callback_data="cmd|tags")],
-                    [InlineKeyboardButton("🎲 Today's Discovery",  callback_data="cmd|discovery")],
-                    [InlineKeyboardButton("← Back", callback_data="cmd|menu")],
-                ])
+                "▼ Where do you want to start?"
             )
+            _explore_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🧑‍🎤 Artist",              callback_data="cmd|map_prompt")],
+                [InlineKeyboardButton("🎸 Play a genre",       callback_data="cmd|genre_prompt")],
+                [InlineKeyboardButton("🏷️ My tag collection",  callback_data="cmd|tags")],
+                [InlineKeyboardButton("🎲 Today's Discovery",  callback_data="cmd|discovery")],
+                [InlineKeyboardButton("← Back", callback_data="cmd|menu")],
+            ])
+            if query.message.photo:
+                try:
+                    query.message.delete()
+                except Exception:
+                    pass
+                message.reply_text(_explore_text, parse_mode="HTML", reply_markup=_explore_markup)
+            else:
+                try:
+                    query.edit_message_text(_explore_text, parse_mode="HTML", reply_markup=_explore_markup)
+                except Exception:
+                    message.reply_text(_explore_text, parse_mode="HTML", reply_markup=_explore_markup)
 
         elif value in ("discovery", "discovery_refresh"):
             force = (value == "discovery_refresh")
