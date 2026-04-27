@@ -4911,12 +4911,15 @@ def handle_buttons(update, context):
                 try: _m.delete()
                 except Exception: pass
             if not discoveries:
-                _edit_card_message(
-                    query, chat_id,
+                try:
+                    query.message.delete()
+                except Exception:
+                    pass
+                message.reply_text(
                     "🎲 Today's Discovery\n\n"
                     "Start exploring artists to get personalized recommendations!\n\n"
                     "💡 Use 🧭 Free Explore or ✦ Kurator's Picks to build your profile.",
-                    InlineKeyboardMarkup([[InlineKeyboardButton("← Back to Menu", callback_data="cmd|menu")]])
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back to Menu", callback_data="cmd|menu")]])
                 )
                 return
             buttons = []
@@ -4934,19 +4937,13 @@ def handle_buttons(update, context):
                 InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
                 InlineKeyboardButton("← Back",     callback_data="cmd|explore_menu"),
             ])
-            disc_text  = "\n".join(lines)
+            disc_text   = "\n".join(lines)
             disc_markup = InlineKeyboardMarkup(buttons)
-            # Use _edit_card_message to handle photo vs text cards safely
             try:
-                _edit_card_message(query, chat_id, disc_text, disc_markup)
+                query.message.delete()
             except Exception:
-                # Fallback: send as new message
-                try:
-                    query.message.delete()
-                except Exception:
-                    pass
-                message.reply_text(disc_text, parse_mode="HTML",
-                                   reply_markup=disc_markup)
+                pass
+            message.reply_text(disc_text, reply_markup=disc_markup)
 
         elif value == "discovery_playlist":
             try:
