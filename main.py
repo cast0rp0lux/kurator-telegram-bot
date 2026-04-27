@@ -4568,11 +4568,12 @@ def _render_map(message, artist_query, chat_id):
     has_photo      = img_bytes is not None
 
     map_memory[chat_id] = {
-        "artist":       canonical_name,  # MB canonical — has "The", correct spelling
-        "display_name": display_name,
-        "styles":       sorted_styles,
-        "info":         info,
-        "has_photo":    has_photo,
+        "artist":         canonical_name,
+        "display_name":   display_name,
+        "styles":         sorted_styles,
+        "info":           info,
+        "has_photo":      has_photo,
+        "from_discovery": map_memory.get(chat_id, {}).get("from_discovery", False),
     }
     save_map_memory()
 
