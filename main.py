@@ -21,10 +21,23 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.18)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.19)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.19": {
+        "date": "2026-04-27",
+        "changes": [
+            "Nuevo botón '🍌 Generate Playlist' en Today's Discovery",
+            "Pipeline: 15 seeds → expand 5 similares cada uno → filtro underground → 50 tracks",
+            "Mix 30% más oscuro + 70% underground aleatorio",
+        ],
+        "technical": [
+            "_generate_playlist_from_discoveries(): 3 fases paralelas (10/20/15 workers)",
+            "Handler cmd|discovery_playlist: lee cache → loading → pipeline → send_playlist",
+            "Mínimo 20 tracks para considerar éxito",
+        ]
+    },
     "6.9.18": {
         "date": "2026-04-27",
         "changes": [
@@ -1110,6 +1123,76 @@ def _generate_daily_discoveries(force_new=False):
         log.warning(f"[Discovery] Cache write failed: {e}")
 
     return discoveries or None
+
+
+def _generate_playlist_from_discoveries(discoveries, target_count=50):
+    """
+    Build a ~50-track playlist from Today's Discovery artists.
+    Pipeline: 15 seeds → expand 5 similar each → filter underground → fetch top track.
+    Returns list of "Artist - Track" strings (ready for send_playlist), or None.
+    """
+    import random as _random
+
+    if not discoveries:
+        return None
+
+    seed_names = [d["name"] for d in discoveries]
+    log.info(f"[DiscPlaylist] Starting from {len(seed_names)} seeds")
+
+    # STEP 1: Expand each seed → 5 similar artists (parallel)
+    expanded: set = set(seed_names)
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {ex.submit(_fetch_similar_names, a): a for a in seed_names}
+        for f in as_completed(futures):
+            try:
+                expanded.update(f.result()[:5])
+            except Exception:
+                pass
+    log.info(f"[DiscPlaylist] Expanded pool: {len(expanded)} artists")
+
+    # STEP 2: Filter underground — keep <1M listeners, not mainstream (parallel)
+    underground: list = []
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        futures = {ex.submit(_fetch_listeners, a): a for a in expanded}
+        for f in as_completed(futures):
+            try:
+                name, listeners = f.result()
+                if listeners < 1_000_000 and not _is_mainstream_artist_or_member(name):
+                    underground.append((name, listeners))
+            except Exception:
+                pass
+    log.info(f"[DiscPlaylist] {len(underground)} underground artists")
+
+    if len(underground) < 20:
+        log.warning("[DiscPlaylist] Not enough underground artists")
+        return None
+
+    # STEP 3: Mix 30% most obscure + 70% random from rest
+    underground.sort(key=lambda x: x[1])
+    cut = max(1, int(len(underground) * 0.30))
+    obscure_pool = underground[:cut]
+    rest_pool    = underground[cut:]
+    _random.shuffle(rest_pool)
+    candidates = [a for a, _ in (obscure_pool + rest_pool)][: target_count + 10]
+
+    # STEP 4: Fetch top track per artist (parallel)
+    tracks: list = []
+    with ThreadPoolExecutor(max_workers=15) as ex:
+        futures = {ex.submit(_fetch_top_track, a): a for a in candidates}
+        for f in as_completed(futures):
+            try:
+                result = f.result()
+                if result:
+                    artist, title, key = result
+                    add_to_history(key)
+                    tracks.append(f"{artist} - {title}")
+                    if len(tracks) >= target_count:
+                        break
+            except Exception:
+                pass
+
+    log.info(f"[DiscPlaylist] Built {len(tracks)} tracks")
+    return tracks if len(tracks) >= 20 else None
 
 
 # ─── Artist graph expansion ───────────────────────────────────────────────────
@@ -4720,6 +4803,9 @@ def handle_buttons(update, context):
                 )])
             lines = ["🎲 Today's Discovery"]
             buttons.append([
+                InlineKeyboardButton("🍌 Generate Playlist", callback_data="cmd|discovery_playlist"),
+            ])
+            buttons.append([
                 InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
                 InlineKeyboardButton("← Back",     callback_data="cmd|explore_menu"),
             ])
@@ -4736,6 +4822,34 @@ def handle_buttons(update, context):
                     pass
                 message.reply_text(disc_text, parse_mode="HTML",
                                    reply_markup=disc_markup)
+
+        elif value == "discovery_playlist":
+            try:
+                with open(DISCOVERY_CACHE_FILE, "r", encoding="utf-8") as f:
+                    cache = json.load(f)
+                discoveries = cache.get("discoveries") or []
+            except Exception:
+                discoveries = []
+            if not discoveries:
+                query.answer("❌ Generate discoveries first", show_alert=True)
+                return
+            try:
+                query.edit_message_text(
+                    "🍌 *Generating Playlist*\n\n"
+                    "🎵 Expanding from your discoveries\n"
+                    "🎵 Filtering underground artists\n"
+                    "🎵 Selecting 50 tracks",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+            tracks = _generate_playlist_from_discoveries(discoveries, target_count=50)
+            send_playlist(
+                message, tracks,
+                title="🍌 Discovery Playlist",
+                branded=True,
+                chat_id=chat_id
+            )
 
         elif value == "playlist":
             _pending_decades.pop(chat_id, None)
@@ -5949,6 +6063,9 @@ def discovery_command(update, context):
             callback_data=safe_callback(f"discovery_artist|{name}")
         )])
     lines = ["🎲 Today's Discovery"]
+    buttons.append([
+        InlineKeyboardButton("🍌 Generate Playlist", callback_data="cmd|discovery_playlist"),
+    ])
     buttons.append([
         InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
         InlineKeyboardButton("← Back",     callback_data="cmd|explore_menu"),
