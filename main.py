@@ -21,10 +21,24 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.16)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.17)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.17": {
+        "date": "2026-04-27",
+        "changes": [
+            "Localización de artistas mejorada: UK muestra subcountry (England 🏴󠁧󠁢󠁥󠁮󠁧󠁿, Scotland 🏴󠁧󠁢󠁳󠁣󠁴󠁿, Wales 🏴󠁧󠁢󠁷󠁬󠁳󠁿) cuando está disponible en MusicBrainz",
+            "Artistas de EE.UU. muestran estado (ej: 🇺🇸 Los Angeles, California) en vez de solo USA",
+        ],
+        "technical": [
+            "_detect_uk_subdivision(area): usa iso-3166-2-codes para GB-ENG/SCT/WLS/NIR",
+            "_extract_us_state(area): sube por relations['area'] buscando iso-3166-2-codes US-XX",
+            "COUNTRY_FLAGS + COUNTRY_NAMES ampliados con claves XE-GB-ENG/SCT/WLS/NIR",
+            "info['state'] añadido al dict de _get_artist_full_info",
+            "_format_artist_card: usa state para US, subdivision para UK",
+        ]
+    },
     "6.9.16": {
         "date": "2026-04-26",
         "changes": [
@@ -3298,6 +3312,9 @@ COUNTRY_FLAGS = {
     "ID": "🇮🇩", "MY": "🇲🇾", "SG": "🇸🇬", "PH": "🇵🇭",
     "IL": "🇮🇱", "EG": "🇪🇬", "MA": "🇲🇦", "ET": "🇪🇹",
     "XE": "🇪🇺", "XW": "🌍",
+    # UK subdivisions (via MusicBrainz iso-3166-2-codes)
+    "XE-GB-ENG": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "XE-GB-SCT": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+    "XE-GB-WLS": "🏴󠁧󠁢󠁷󠁬󠁳󠁿", "XE-GB-NIR": "🇬🇧",
 }
 
 COUNTRY_NAMES = {
@@ -3316,10 +3333,59 @@ COUNTRY_NAMES = {
     "ID": "Indonesia", "MY": "Malaysia", "SG": "Singapore", "PH": "Philippines",
     "IL": "Israel", "EG": "Egypt", "MA": "Morocco", "ET": "Ethiopia",
     "XE": "Europe", "XW": "Worldwide",
+    "XE-GB-ENG": "England", "XE-GB-SCT": "Scotland",
+    "XE-GB-WLS": "Wales",   "XE-GB-NIR": "Northern Ireland",
 }
 
 def _country_flag(code):
     return COUNTRY_FLAGS.get(code, "")
+
+_UK_SUB = {
+    "GB-ENG": ("XE-GB-ENG", "England"),
+    "GB-SCT": ("XE-GB-SCT", "Scotland"),
+    "GB-WLS": ("XE-GB-WLS", "Wales"),
+    "GB-NIR": ("XE-GB-NIR", "Northern Ireland"),
+}
+
+def _detect_uk_subdivision(area):
+    """Return (code_key, display_name) for English/Scottish/Welsh/NI areas, else (None, None)."""
+    for rel in area.get("relations", []) if isinstance(area, dict) else []:
+        sub_area = rel.get("area", {})
+        for iso in sub_area.get("iso-3166-2-codes", []):
+            if iso in _UK_SUB:
+                return _UK_SUB[iso]
+    for iso in area.get("iso-3166-2-codes", []) if isinstance(area, dict) else []:
+        if iso in _UK_SUB:
+            return _UK_SUB[iso]
+    return None, None
+
+def _extract_us_state(area):
+    """Walk MusicBrainz area relations upward to find a US state iso-3166-2 code."""
+    if not isinstance(area, dict):
+        return None
+    for rel in area.get("relations", []):
+        sub = rel.get("area", {})
+        for iso in sub.get("iso-3166-2-codes", []):
+            if iso.startswith("US-") and len(iso) == 5:
+                state_code = iso[3:]
+                return _US_STATE_NAMES.get(state_code, state_code)
+    return None
+
+_US_STATE_NAMES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+    "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+    "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming", "DC": "Washington D.C.",
+}
 
 _mb_lock      = threading.Lock()
 _mb_last_call = 0.0
@@ -3760,7 +3826,7 @@ def _get_artist_full_info(artist_query):
     info = {
         "official_name": None,
         "country_code":  None, "country_name": None, "flag": "",
-        "city":          None,
+        "city":          None, "state": None,
         "begin_year":    None, "end_year": None,
         "genres":        [], "bio": None, "lastfm_url": None,
         "label":         None, "albums": [],
@@ -3781,11 +3847,20 @@ def _get_artist_full_info(artist_query):
             info["country_name"] = COUNTRY_NAMES.get(code, code)
         # Extract city/area
         area = mb.get("begin-area") or mb.get("area")
+        if code == "GB" and area:
+            sub_code, sub_name = _detect_uk_subdivision(area)
+            if sub_code:
+                info["country_code"] = sub_code
+                info["flag"]         = _country_flag(sub_code)
+                info["country_name"] = sub_name
         if area:
             city = area.get("name")
-            # Don't show city if it's the same as the country name
             if city and city != info.get("country_name") and city != mb.get("country"):
                 info["city"] = city
+            if code == "US":
+                state = _extract_us_state(area)
+                if state:
+                    info["state"] = state
         ls    = mb.get("life-span", {})
         begin = ls.get("begin", "")
         end   = ls.get("end", "")
@@ -3851,10 +3926,13 @@ def _format_artist_card(artist_query, info):
     name  = _artist_display_name(info, artist_query)
     lines = [name, ""]
     meta  = []
-    flag  = info.get("flag", "")
-    city  = info.get("city")
+    flag    = info.get("flag", "")
+    city    = info.get("city")
+    state   = info.get("state")
     country = info.get("country_name")
-    if flag and city and country:
+    if flag and city and state:
+        meta.append(f"{flag} {city}, {state}")
+    elif flag and city and country:
         meta.append(f"{flag} {city}, {country}")
     elif flag and country:
         meta.append(f"{flag} {country}")
