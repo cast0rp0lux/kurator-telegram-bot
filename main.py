@@ -4803,7 +4803,7 @@ def handle_buttons(update, context):
                 )])
             lines = ["🎲 Today's Discovery"]
             buttons.append([
-                InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
+                InlineKeyboardButton("🎲 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
             ])
             buttons.append([
                 InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
@@ -4833,23 +4833,20 @@ def handle_buttons(update, context):
             if not discoveries:
                 query.answer("❌ Generate discoveries first", show_alert=True)
                 return
+            query.edit_message_text("🎲 Building Discovery Playlist…")
+            _spin = _start_spinner(query.message, "🎲 Building Discovery Playlist…")
+            sent, timer = _working_message(message, "🎲 Still building…", delay=50)
+            _register_timer(chat_id, sent, timer)
+            tracks = _generate_playlist_from_discoveries(discoveries, target_count=50)
+            _spin.stop()
+            _cancel_working(sent, timer)
+            _unregister_timer(chat_id)
+            send_playlist(message, tracks, title="🎲 Discovery Playlist", branded=True, chat_id=chat_id)
+            _clear_progress_msgs(chat_id)
             try:
-                query.edit_message_text(
-                    "🍌 *Generating Playlist*\n\n"
-                    "🎵 Expanding from your discoveries\n"
-                    "🎵 Filtering underground artists\n"
-                    "🎵 Selecting 50 tracks",
-                    parse_mode="Markdown"
-                )
+                query.edit_message_text("🎲 Discovery Playlist")
             except Exception:
                 pass
-            tracks = _generate_playlist_from_discoveries(discoveries, target_count=50)
-            send_playlist(
-                message, tracks,
-                title="🍌 Discovery Playlist",
-                branded=True,
-                chat_id=chat_id
-            )
 
         elif value == "playlist":
             _pending_decades.pop(chat_id, None)
@@ -6064,7 +6061,7 @@ def discovery_command(update, context):
         )])
     lines = ["🎲 Today's Discovery"]
     buttons.append([
-        InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
+        InlineKeyboardButton("🎲 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
     ])
     buttons.append([
         InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
