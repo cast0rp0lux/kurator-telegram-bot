@@ -4803,7 +4803,7 @@ def handle_buttons(update, context):
                 )])
             lines = ["🎲 Today's Discovery"]
             buttons.append([
-                InlineKeyboardButton("🎲 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
+                InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
             ])
             buttons.append([
                 InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
@@ -6061,7 +6061,7 @@ def discovery_command(update, context):
         )])
     lines = ["🎲 Today's Discovery"]
     buttons.append([
-        InlineKeyboardButton("🎲 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
+        InlineKeyboardButton("🍌 GENERATE PLAYLIST", callback_data="cmd|discovery_playlist"),
     ])
     buttons.append([
         InlineKeyboardButton("🔄 Get New", callback_data="cmd|discovery_refresh"),
