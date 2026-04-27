@@ -21,10 +21,22 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logg
 log = logging.getLogger(__name__)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.23)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.24)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.24": {
+        "date": "2026-04-27",
+        "changes": [
+            "Fix: artistas USA ahora muestran estado (California, New York…) en vez de 'USA'",
+            "Fix: artistas UK ahora muestran subdivisión (England, Scotland…) aunque begin-area sea ciudad",
+        ],
+        "technical": [
+            "_extract_us_state / _detect_uk_subdivision: inline relations del artist endpoint estaban vacías",
+            "Añadido _mb_area_rels(): query separada GET /area/{id}?inc=area-rels",
+            "Ambas funciones usan la query de área como fallback para obtener la jerarquía 'part of'",
+        ]
+    },
     "6.9.23": {
         "date": "2026-04-27",
         "changes": [
@@ -3505,28 +3517,61 @@ _UK_SUB = {
     "GB-NIR": ("XE-GB-NIR", "Northern Ireland"),
 }
 
+def _mb_area_rels(area_mbid):
+    """Fetch area with area-rels to get parent hierarchy (city → state / city → subdivision)."""
+    try:
+        return _mb_get(f"area/{area_mbid}", {"inc": "area-rels"})
+    except Exception:
+        return {}
+
 def _detect_uk_subdivision(area):
     """Return (code_key, display_name) for English/Scottish/Welsh/NI areas, else (None, None)."""
-    for rel in area.get("relations", []) if isinstance(area, dict) else []:
-        sub_area = rel.get("area", {})
-        for iso in sub_area.get("iso-3166-2-codes", []):
-            if iso in _UK_SUB:
-                return _UK_SUB[iso]
-    for iso in area.get("iso-3166-2-codes", []) if isinstance(area, dict) else []:
+    if not isinstance(area, dict):
+        return None, None
+    # ISO codes directly on the area (works when begin-area IS the subdivision)
+    for iso in area.get("iso-3166-2-codes", []):
         if iso in _UK_SUB:
             return _UK_SUB[iso]
+    # Inline relations (rarely populated from artist endpoint, but try)
+    for rel in area.get("relations", []):
+        for iso in rel.get("area", {}).get("iso-3166-2-codes", []):
+            if iso in _UK_SUB:
+                return _UK_SUB[iso]
+    # Separate area query — walk "part of" chain to find subdivision
+    area_mbid = area.get("id")
+    if not area_mbid:
+        return None, None
+    data = _mb_area_rels(area_mbid)
+    for rel in data.get("relations", []):
+        if rel.get("type") == "part of":
+            for iso in rel.get("area", {}).get("iso-3166-2-codes", []):
+                if iso in _UK_SUB:
+                    return _UK_SUB[iso]
     return None, None
 
 def _extract_us_state(area):
-    """Walk MusicBrainz area relations upward to find a US state iso-3166-2 code."""
+    """Find the US state for a city area via MB area relations."""
     if not isinstance(area, dict):
         return None
+    # ISO codes directly on the area (works when begin-area IS the state)
+    for iso in area.get("iso-3166-2-codes", []):
+        if iso.startswith("US-") and len(iso) == 5:
+            return _US_STATE_NAMES.get(iso[3:], iso[3:])
+    # Inline relations (rarely populated from artist endpoint, but try)
     for rel in area.get("relations", []):
-        sub = rel.get("area", {})
-        for iso in sub.get("iso-3166-2-codes", []):
+        for iso in rel.get("area", {}).get("iso-3166-2-codes", []):
             if iso.startswith("US-") and len(iso) == 5:
-                state_code = iso[3:]
-                return _US_STATE_NAMES.get(state_code, state_code)
+                return _US_STATE_NAMES.get(iso[3:], iso[3:])
+    # Separate area query — walk "part of" chain to find state
+    area_mbid = area.get("id")
+    if not area_mbid:
+        return None
+    data = _mb_area_rels(area_mbid)
+    for rel in data.get("relations", []):
+        if rel.get("type") == "part of":
+            for iso in rel.get("area", {}).get("iso-3166-2-codes", []):
+                if iso.startswith("US-") and len(iso) == 5:
+                    return _US_STATE_NAMES.get(iso[3:], iso[3:])
     return None
 
 _US_STATE_NAMES = {
