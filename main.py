@@ -4691,11 +4691,11 @@ def handle_buttons(update, context):
         elif value in ("discovery", "discovery_refresh"):
             force = (value == "discovery_refresh")
             try:
-                _edit_card_message(
-                    query, chat_id,
+                query.edit_message_text(
+                    "🎲 *Today's Discovery*\n\n"
                     "🎲 Analyzing your listening history\n"
                     "🎲 Finding similar artists",
-                    None
+                    parse_mode="Markdown"
                 )
             except Exception:
                 pass
@@ -5917,8 +5917,10 @@ def discovery_command(update, context):
     msg     = update.message
     chat_id = update.effective_chat.id
     loading = msg.reply_text(
+        "🎲 *Today's Discovery*\n\n"
         "🎲 Analyzing your listening history\n"
-        "🎲 Finding similar artists"
+        "🎲 Finding similar artists",
+        parse_mode="Markdown"
     )
     discoveries = _generate_daily_discoveries(force_new=False)
     try:
