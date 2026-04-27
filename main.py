@@ -4833,6 +4833,8 @@ def handle_buttons(update, context):
             if not discoveries:
                 query.answer("❌ Generate discoveries first", show_alert=True)
                 return
+            from datetime import date as _date
+            _disc_title = "🎲 Discovery Playlist " + _date.today().strftime("%m/%d")
             query.edit_message_text("🎲 Building Discovery Playlist…")
             _spin = _start_spinner(query.message, "🎲 Building Discovery Playlist…")
             sent, timer = _working_message(message, "🎲 Still building…", delay=50)
@@ -4841,10 +4843,10 @@ def handle_buttons(update, context):
             _spin.stop()
             _cancel_working(sent, timer)
             _unregister_timer(chat_id)
-            send_playlist(message, tracks, title="🎲 Discovery Playlist", branded=True, chat_id=chat_id)
+            send_playlist(message, tracks, title=_disc_title, branded=True, chat_id=chat_id)
             _clear_progress_msgs(chat_id)
             try:
-                query.edit_message_text("🎲 Discovery Playlist")
+                query.edit_message_text(_disc_title)
             except Exception:
                 pass
 
