@@ -29,10 +29,22 @@ _IMG_MIN_RATIO = 0.75
 _IMG_MAX_RATIO = 1.33
 
 # ─── Version ──────────────────────────────────────────────────────────────────
-BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.25)"
+BOT_VERSION = "Kurator 📀 Music Discovery Engine (v6.9.26)"
 
 # ─── Changelog ────────────────────────────────────────────────────────────────
 CHANGELOG = {
+    "6.9.26": {
+        "date": "2026-04-27",
+        "changes": [
+            "Fix: ubicación ya no muestra 'United States' o 'United Kingdom' como ciudad",
+            "Imágenes 5-10x más rápidas: se usa la primera foto con aspect ratio aceptable",
+        ],
+        "technical": [
+            "city filter: excluye áreas con type='Country' en MB (begin-area a nivel país)",
+            "_pick_best: fast-path — para en la primera imagen válida (ratio 0.75-1.33)",
+            "Timeout imágenes reducido: 8s → 5s",
+        ]
+    },
     "6.9.25": {
         "date": "2026-04-27",
         "changes": [
@@ -2195,42 +2207,46 @@ def _get_artist_image(artist):
             return None
 
     def _pick_best(urls):
-        """Try each URL, prefer images closest to square aspect ratio.
-        Returns JPEG bytes of best candidate, or None."""
+        """Return JPEG bytes of first image with acceptable aspect ratio (fast path).
+        Falls back to least-bad if none are acceptable."""
         from PIL import Image
-        candidates = []
-        for url in urls:
+        fallback = None  # (score, raw)
+        for i, url in enumerate(urls):
             try:
-                raw = requests.get(url, timeout=8, headers=_HEADERS).content
-                img = Image.open(_io_module.BytesIO(raw)).convert("RGB")
-                w, h = img.size
+                raw   = requests.get(url, timeout=5, headers=_HEADERS).content
+                img   = Image.open(_io_module.BytesIO(raw)).convert("RGB")
+                w, h  = img.size
                 ratio = w / h
                 score = abs(ratio - 1.0)
                 ok    = _IMG_MIN_RATIO <= ratio <= _IMG_MAX_RATIO
-                log.info(f"[Image] ratio={ratio:.2f} score={score:.2f} ok={ok} {url[:70]}")
-                candidates.append((score, ok, raw, url))
-                if ok and score < 0.10:
-                    break
+                log.info(f"[Image] #{i+1} ratio={ratio:.2f} ok={ok} {url[:70]}")
+                if ok:
+                    log.info(f"[Image] ✓ First acceptable (tested {i+1}/{len(urls)})")
+                    sq = min(w, h)
+                    img = img.crop(((w-sq)//2, (h-sq)//2, (w+sq)//2, (h+sq)//2))
+                    img = img.resize((600, 600), Image.LANCZOS)
+                    buf = _io_module.BytesIO()
+                    img.save(buf, "JPEG", quality=88)
+                    return buf.getvalue()
+                if fallback is None or score < fallback[0]:
+                    fallback = (score, raw)
             except Exception as e:
-                log.debug(f"[Image] Fetch failed {url[:70]}: {e}")
-        if not candidates:
-            return None
-        candidates.sort(key=lambda x: (not x[1], x[0]))
-        score, ok, raw, best_url = candidates[0]
-        log.info(f"[Image] Best candidate score={score:.2f} ok={ok} from {len(candidates)}")
-        try:
-            from PIL import Image
-            img = Image.open(_io_module.BytesIO(raw)).convert("RGB")
-            w, h = img.size
-            sq = min(w, h)
-            img = img.crop(((w - sq) // 2, (h - sq) // 2, (w + sq) // 2, (h + sq) // 2))
-            img = img.resize((600, 600), Image.LANCZOS)
-            buf = _io_module.BytesIO()
-            img.save(buf, "JPEG", quality=88)
-            return buf.getvalue()
-        except Exception as e:
-            log.error(f"[Image] Final crop failed: {e}")
-            return None
+                log.debug(f"[Image] Fetch failed #{i+1}: {e}")
+        if fallback:
+            score, raw = fallback
+            log.warning(f"[Image] No acceptable ratio — using least bad (score={score:.2f})")
+            try:
+                img = Image.open(_io_module.BytesIO(raw)).convert("RGB")
+                w, h = img.size
+                sq = min(w, h)
+                img = img.crop(((w-sq)//2, (h-sq)//2, (w+sq)//2, (h+sq)//2))
+                img = img.resize((600, 600), Image.LANCZOS)
+                buf = _io_module.BytesIO()
+                img.save(buf, "JPEG", quality=88)
+                return buf.getvalue()
+            except Exception as e:
+                log.error(f"[Image] Fallback crop failed: {e}")
+        return None
 
     def _cache_and_return(data):
         _artist_image_cache[artist] = data
@@ -4244,7 +4260,10 @@ def _get_artist_full_info(artist_query):
                 info["country_name"] = sub_name
         if area:
             city = area.get("name")
-            if city and city != info.get("country_name") and city != mb.get("country"):
+            if (city
+                    and area.get("type", "") != "Country"
+                    and city != info.get("country_name")
+                    and city != mb.get("country")):
                 info["city"] = city
             if code == "US":
                 state = _extract_us_state(area)
